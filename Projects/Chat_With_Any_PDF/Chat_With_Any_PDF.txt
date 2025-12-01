@@ -26,3 +26,38 @@ Building end-to-end pipelines using LangChain Runnables for flexible chaining
 Working with local LLMs (LLaMA 3.2) through Ollama — enabling private, offline inference
 Handling multi-PDF ingestion, metadata tagging, and chunk-based retrieval
 Creating a responsive and user-friendly app with Streamlit’s session state management
+
+
+
+
+
+
+🚀🚀 Complete Setup Instructions for Chat with Any PDF Project
+💡 Step 1: Activate Virtual Environment
+Open terminal in your project folder and run: venv\Scripts\activate
+
+📤 Step 2: Download Ollama
+Go to https://ollama.ai
+Download and install Ollama for Windows
+Complete the installation then restart the terminal
+
+🧠 Step 3: Pull Required Models
+Open a new terminal and run these commands one by one: 
+- ollama pull llama3.2:1b
+- ollama pull nomic-embed-text
+
+🔍 Step 4: Start Ollama Server
+Keep a terminal open and run: ollama serve
+
+🤖 Step 5: Run the Streamlit Application
+Open a new terminal in your project folder and run: streamlit run app.py
+
+🧩 Step 6: Use the Application
+1- Click "Browse files" to upload one or more PDF documents
+2- Click the "Process Documents" button
+3- Wait for the success message showing number of chunks processed
+4- Type your question in the text input box
+5- Wait for the answer to generate
+6- Click "View Source Documents" to see which parts of the PDF were used
+7- Your chat history is saved and displayed below
+8- Use the sidebar to clear chat history or select different models

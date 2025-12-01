@@ -140,18 +140,22 @@ def handle_question():
             context = "\n\n".join([doc.page_content for doc in retrieved_chunks])
 
             # Create LLM (Ollama backend)
-            model = ChatOllama(model=model_option, base_url='http://localhost:11434', temperature=1.2)
+            model = ChatOllama(model=model_option, base_url='http://localhost:11434', temperature=0.7)
 
             # Define prompt template
             prompt = """
             You are a helpful assistant. Use the following extracted content from documents to answer the user's question.
-            If the answer is not found in the content, respond with: "This information is not present in the uploaded documents."
 
-            Answer in exactly three bullet points, with a blank line between each bullet.
+            If the answer is not found in the content, respont with "This information is not present in the uploaded documents."
 
-            Question: {question}
+            Otherwise, answer in **exactly three bullet points** with a blank line between each bullet.
+            
+            DO NOT use outside knowledge. DO NOT guess. DO NOT add any information not explicitly in the context.
 
-            Context:
+            Question:
+            {question}
+
+            Content:
             {context}
 
             Answer:
