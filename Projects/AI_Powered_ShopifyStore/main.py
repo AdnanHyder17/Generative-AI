@@ -13,7 +13,7 @@ import sys
 import uuid
 from langchain_core.messages import HumanMessage
 
-from graph.agent_graph import build_graph
+from graph.agent_graph import Context, build_graph
 from utils import get_logger
 
 logger = get_logger("main")
@@ -69,8 +69,6 @@ def run_query(
     """
     config = {
         "configurable": {
-            "user_role": role,
-            "session_id": thread_id,
             "thread_id": thread_id,  # Required by InMemorySaver
         }
     }
@@ -79,6 +77,7 @@ def run_query(
         result = graph.invoke(
             {"messages": [HumanMessage(content=user_input)]},
             config=config,
+            context=Context(user_role=role),
         )
         messages = result.get("messages", [])
         # Get last AI message
