@@ -14,28 +14,21 @@ Builds the LangGraph StateGraph with:
 from typing import Annotated, Literal
 from typing_extensions import TypedDict
 
-from langchain_core.messages import (
-    BaseMessage,
-    AIMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import BaseMessage, AIMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.runtime import Runtime 
 
 from config.settings import settings
 from agents.customer_agent import build_customer_agent, get_customer_system_message
-from agents.admin_agent import build_admin_agent, get_admin_system_message
+from agents.admin_agent import build_admin_agent, get_admin_system_message, ALL_ADMIN_TOOLS
 from tools.customer_tools import CUSTOMER_TOOLS
-from tools.admin_tools import ADMIN_TOOLS
 from utils import get_logger
 
 logger = get_logger("agent_graph")
-
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -55,10 +48,8 @@ class Context(TypedDict):
     Immutable context injected at graph invocation time.
 
     user_role  : "customer" | "admin" — determines routing
-    session_id : Optional session identifier for logging
     """
     user_role: str
-    session_id: str
 
 
 # ─── Graph Builder ────────────────────────────────────────────────────────────
@@ -75,25 +66,23 @@ def build_graph() -> tuple:
     llm = ChatGoogleGenerativeAI(
         model=settings.GEMINI_MODEL,
         google_api_key=settings.GEMINI_API_KEY,
-        temperature=1.0,
+        temperature=0.2,
     )
 
     customer_agent = build_customer_agent(llm)
     admin_agent = build_admin_agent(llm)
 
-    all_admin_tools = ADMIN_TOOLS + CUSTOMER_TOOLS
-
     customer_tool_node = ToolNode(CUSTOMER_TOOLS)
-    admin_tool_node = ToolNode(all_admin_tools)
+    admin_tool_node = ToolNode(ALL_ADMIN_TOOLS)
 
     # ── Node: Router ──────────────────────────────────────────────────────────
-    def router_node(state: State, config: dict) -> dict:
+    def router_node(state: State, runtime: Runtime[Context]) -> dict:
         """
         Inspect the configurable context to determine user role and set active_agent.
         Customers are ALWAYS routed to the customer agent.
         Admins start at the admin agent (they can also ask customer questions).
         """
-        ctx: Context = config.get("configurable", {})
+        ctx: runtime.context
         user_role = ctx.get("user_role", "customer").lower()
 
         if user_role == "admin":
