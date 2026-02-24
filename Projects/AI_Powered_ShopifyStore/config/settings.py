@@ -10,7 +10,7 @@ load_dotenv()
 class Settings:
     # Gemini
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash" 
 
     # Shopify
     SHOPIFY_ACCESS_TOKEN: str = os.getenv("X_SHOPIFY_ACCESS_TOKEN", "")
