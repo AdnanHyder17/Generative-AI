@@ -143,7 +143,6 @@ class State(TypedDict):
 
 class Context(TypedDict):
     user_role: str     # "customer" | "admin" — determines routing
-    session_id: str    # For logging
 ```
 
 Memory is persisted with `InMemorySaver` — each thread maintains its own conversation history across multiple turns.
