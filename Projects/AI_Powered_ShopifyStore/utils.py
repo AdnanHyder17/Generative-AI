@@ -1,304 +1,428 @@
 """
-utils.py - Shared utilities for the Shopify AI Agent system.
+utils.py — Shared utility functions for Silk Skin AI Agent system.
 
-Covers:
-  - Shopify REST API client with error handling
-  - Date/time helpers
-  - Response formatters
-  - Logging setup
+All Shopify communication uses the Admin GraphQL API (2026-01).
+GraphQL endpoint: https://{store}/admin/api/2026-01/graphql.json
 """
 
-import logging
-import json
-import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+import os
 import requests
+from dotenv import load_dotenv
 
-from config.settings import settings
+load_dotenv()
 
-# ─── Logging ────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Shopify Config
+# ─────────────────────────────────────────────
 
-def get_logger(name: str) -> logging.Logger:
-    """Return a consistently configured logger."""
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    return logger
+SHOPIFY_STORE_URL = os.getenv("SHOPIFY_STORE_URL", "")
+SHOPIFY_ACCESS_TOKEN = os.getenv("X_SHOPIFY_ACCESS_TOKEN", "")
+
+GRAPHQL_URL = f"https://{SHOPIFY_STORE_URL}/admin/api/2026-01/graphql.json"
+
+SHOPIFY_HEADERS = {
+    "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+    "Content-Type": "application/json",
+}
+
+VALID_TAGS = [
+    "Wallet", "Handbags", "Card Holder", "Bags",
+    "Gifts", "Accessories", "Ladies Wallet", "Travel", "featured collection"
+]
 
 
-logger = get_logger("utils")
+# ─────────────────────────────────────────────
+# Core GraphQL Executor
+# ─────────────────────────────────────────────
 
-
-# ─── Shopify API Client ──────────────────────────────────────────────────────
-
-class ShopifyClient:
+def gql(query: str, variables: dict = None) -> dict:
     """
-    Thin wrapper around Shopify Admin REST API.
-    All methods return plain dicts / lists and raise on HTTP errors.
+    Execute a GraphQL query against the Shopify Admin API.
+
+    Args:
+        query: GraphQL query string.
+        variables: Optional dict of variables referenced in the query.
+
+    Returns:
+        The 'data' portion of the GraphQL response.
+
+    Raises:
+        RuntimeError if the HTTP request fails or GraphQL returns errors.
     """
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
 
-    def __init__(self):
-        self.base_url = settings.shopify_base_url
-        self.headers = settings.shopify_headers
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
-
-    def _get(self, endpoint: str, params: Optional[dict] = None) -> dict:
-        url = f"{self.base_url}/{endpoint}"
-        try:
-            resp = self.session.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "unknown"
-            body = e.response.text if e.response else ""
-            raise RuntimeError(
-                f"Shopify GET {endpoint} failed [{status}]: {body}"
-            ) from e
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error on GET {endpoint}: {e}") from e
-
-    def _post(self, endpoint: str, payload: dict) -> dict:
-        url = f"{self.base_url}/{endpoint}"
-        try:
-            resp = self.session.post(url, json=payload, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "unknown"
-            body = e.response.text if e.response else ""
-            raise RuntimeError(
-                f"Shopify POST {endpoint} failed [{status}]: {body}"
-            ) from e
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error on POST {endpoint}: {e}") from e
-
-    # ── Products ──────────────────────────────────────────────────────────────
-
-    def search_products(
-        self,
-        query: str = "",
-        product_type: str = "",
-        limit: int = 10,
-    ) -> list[dict]:
-        params: dict = {"limit": limit}
-        if query:
-            params["title"] = query
-        if product_type:
-            params["product_type"] = product_type
-        data = self._get("products.json", params=params)
-        return data.get("products", [])
-
-    def get_product(self, product_id: int) -> dict:
-        data = self._get(f"products/{product_id}.json")
-        return data.get("product", {})
-
-    def get_product_variants(self, product_id: int) -> list[dict]:
-        product = self.get_product(product_id)
-        return product.get("variants", [])
-
-    def get_all_products(self, limit: int = 250) -> list[dict]:
-        data = self._get("products.json", params={"limit": limit})
-        return data.get("products", [])
-
-    # ── Collections ───────────────────────────────────────────────────────────
-
-    def get_collections(self) -> list[dict]:
-        data = self._get("custom_collections.json")
-        return data.get("custom_collections", [])
-
-    def get_collection_products(self, collection_id: int, limit: int = 20) -> list[dict]:
-        data = self._get(
-            "products.json",
-            params={"collection_id": collection_id, "limit": limit},
-        )
-        return data.get("products", [])
-
-    # ── Orders ────────────────────────────────────────────────────────────────
-
-    def get_order(self, order_id: int) -> dict:
-        data = self._get(f"orders/{order_id}.json")
-        return data.get("order", {})
-
-    def get_orders(self, params: Optional[dict] = None) -> list[dict]:
-        data = self._get("orders.json", params=params or {"status": "any", "limit": 250})
-        return data.get("orders", [])
-
-    def get_orders_in_date_range(
-        self, created_at_min: str, created_at_max: str, status: str = "any"
-    ) -> list[dict]:
-        params = {
-            "created_at_min": created_at_min,
-            "created_at_max": created_at_max,
-            "status": status,
-            "limit": 250,
-        }
-        return self.get_orders(params)
-
-    def get_unfulfilled_orders(self) -> list[dict]:
-        return self.get_orders(
-            {"fulfillment_status": "unfulfilled", "status": "open", "limit": 250}
-        )
-
-    def get_refunded_orders(self, created_at_min: str) -> list[dict]:
-        orders = self.get_orders(
-            {
-                "status": "any",
-                "created_at_min": created_at_min,
-                "limit": 250,
-            }
-        )
-        return [o for o in orders if o.get("refunds")]
-
-    # ── Inventory ─────────────────────────────────────────────────────────────
-
-    def get_inventory_levels(self) -> list[dict]:
-        data = self._get("inventory_levels.json", params={"limit": 250})
-        return data.get("inventory_levels", [])
-
-    # ── Customers ─────────────────────────────────────────────────────────────
-
-    def get_customers(self, limit: int = 250) -> list[dict]:
-        data = self._get("customers.json", params={"limit": limit})
-        return data.get("customers", [])
-
-    def get_customer(self, customer_id: int) -> dict:
-        data = self._get(f"customers/{customer_id}.json")
-        return data.get("customer", {})
-
-
-# ─── Date Helpers ────────────────────────────────────────────────────────────
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def iso_days_ago(days: int) -> str:
-    """Return ISO-8601 UTC timestamp for N days ago."""
-    return (utc_now() - timedelta(days=days)).isoformat()
-
-
-def start_of_today_iso() -> str:
-    now = utc_now()
-    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-
-
-def start_of_month_iso() -> str:
-    now = utc_now()
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-
-
-def start_of_last_month_iso() -> str:
-    now = utc_now()
-    first_of_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_month = first_of_this - timedelta(days=1)
-    return last_month.replace(day=1).isoformat()
-
-
-def end_of_last_month_iso() -> str:
-    now = utc_now()
-    first_of_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_day = first_of_this - timedelta(seconds=1)
-    return last_day.isoformat()
-
-
-# ─── Response Formatters ─────────────────────────────────────────────────────
-
-def format_price(amount: Any) -> str:
-    """Format a numeric string or float as currency."""
     try:
-        return f"${float(amount):.2f}"
-    except (TypeError, ValueError):
+        response = requests.post(GRAPHQL_URL, json=payload, headers=SHOPIFY_HEADERS, timeout=20)
+        response.raise_for_status()
+        result = response.json()
+
+        if "errors" in result:
+            raise RuntimeError(f"GraphQL errors: {result['errors']}")
+
+        return result.get("data", {})
+
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"Shopify GraphQL HTTP error: {e.response.status_code} - {e.response.text}")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Shopify GraphQL request failed: {str(e)}")
+
+
+def gql_paginated(query: str, variables: dict, data_path: list, max_pages: int = 5) -> list:
+    """
+    Execute a paginated GraphQL query using Shopify's cursor-based pagination.
+
+    The query MUST:
+    - Accept a $cursor variable (String)
+    - Return pageInfo { hasNextPage endCursor } on the connection
+    - Return edges { node { ... } } on the connection
+
+    Args:
+        query: GraphQL query string with $cursor variable.
+        variables: Initial variables dict (cursor will be managed automatically).
+        data_path: List of keys to traverse from 'data' to the connection object.
+                   e.g. ["orders"] reaches data.orders
+                   e.g. ["products"] reaches data.products
+        max_pages: Safety cap (default 5 = up to 1,250 records at 250/page).
+
+    Returns:
+        Flat list of all node dicts collected across all pages.
+    """
+    all_nodes = []
+    cursor = None
+    page = 0
+
+    while page < max_pages:
+        vars_with_cursor = {**variables, "cursor": cursor}
+        data = gql(query, vars_with_cursor)
+
+        # Traverse data_path to reach the connection object
+        connection = data
+        for key in data_path:
+            connection = connection.get(key, {})
+
+        nodes = [edge["node"] for edge in connection.get("edges", [])]
+        all_nodes.extend(nodes)
+
+        page_info = connection.get("pageInfo", {})
+        if not page_info.get("hasNextPage", False):
+            break
+
+        cursor = page_info.get("endCursor")
+        page += 1
+
+    return all_nodes
+
+
+# ─────────────────────────────────────────────
+# Formatting Helpers
+# ─────────────────────────────────────────────
+
+def format_money(amount) -> str:
+    """
+    Format a numeric or string amount as Pakistani Rupees (PKR).
+    Handles None, empty string, and float/string inputs gracefully.
+    """
+    try:
+        if amount is None or amount == "":
+            return "Rs. 0.00"
+        return f"Rs. {float(amount):,.2f}"
+    except (ValueError, TypeError):
         return str(amount)
 
 
-def format_product_summary(product: dict) -> str:
-    """One-line product summary for LLM context."""
-    title = product.get("title", "Unknown")
-    variants = product.get("variants", [])
-    prices = [v.get("price", "0") for v in variants]
-    min_price = min(prices, key=lambda x: float(x or 0)) if prices else "N/A"
-    tags = product.get("tags", "")
-    status = product.get("status", "unknown")
-    return (
-        f"• {title} | From {format_price(min_price)} | "
-        f"Status: {status} | Tags: {tags}"
-    )
+# ─────────────────────────────────────────────
+# Product Filtering Helpers
+# ─────────────────────────────────────────────
+
+def filter_products_by_price(products: list, max_price: float) -> list:
+    """
+    Filter summarized products where at least one variant price is <= max_price (PKR).
+
+    Works on already-summarized product dicts (output of summarize_product).
+
+    Args:
+        products: List of summarized product dicts.
+        max_price: Maximum price in PKR.
+
+    Returns:
+        Filtered list of products.
+    """
+    result = []
+    for p in products:
+        variant_prices = []
+        for v in p.get("variants", []):
+            raw = v.get("price", "").replace("Rs.", "").replace(",", "").strip()
+            try:
+                variant_prices.append(float(raw))
+            except ValueError:
+                pass
+        if variant_prices and min(variant_prices) <= max_price:
+            result.append(p)
+    return result
 
 
-def format_order_summary(order: dict) -> str:
-    """One-line order summary for LLM context."""
-    name = order.get("name", f"#{order.get('id', '?')}")
-    total = format_price(order.get("total_price", "0"))
-    fulfillment = order.get("fulfillment_status") or "unfulfilled"
-    financial = order.get("financial_status", "unknown")
-    created = order.get("created_at", "")[:10]
-    customer_name = "Guest"
-    if order.get("customer"):
-        c = order["customer"]
-        customer_name = f"{c.get('first_name','')} {c.get('last_name','')}".strip() or "Guest"
-    return (
-        f"Order {name} | {created} | {customer_name} | "
-        f"{total} | Fulfillment: {fulfillment} | Payment: {financial}"
-    )
+def filter_products_by_name(products: list, name_query: str, threshold: float = 0.35) -> list:
+    """
+    Filter products by fuzzy name match against the product title.
+
+    Allows matching even when the user doesn't type the exact product name.
+    Example: "leather slim wallet" will match "Men's Slim Leather Wallet".
+
+    Strategy (priority order):
+        Score 3 — Exact substring match in title.
+        Score 2 — All query words individually found in title.
+        Score 1 — Token overlap ratio >= threshold (fuzzy match).
+
+    Args:
+        products: List of product dicts.
+        name_query: The user's approximate search string.
+        threshold: Minimum word overlap ratio (0.0-1.0). Default 0.35.
+
+    Returns:
+        Filtered list sorted by match confidence (best matches first).
+    """
+    if not name_query:
+        return products
+
+    query_lower = name_query.lower().strip()
+    stop_words = {"a", "an", "the", "for", "of", "and", "or", "is", "in", "on", "at", "to", "i", "me"}
+    query_tokens = [w for w in query_lower.split() if w not in stop_words and len(w) > 1]
+
+    if not query_tokens:
+        return products
+
+    scored = []
+    for p in products:
+        title = p.get("title", "").lower()
+        title_tokens = set(title.split())
+
+        # Score 3: Exact substring
+        if query_lower in title:
+            scored.append((3, p))
+            continue
+
+        # Score 2: All tokens present
+        if all(token in title for token in query_tokens):
+            scored.append((2, p))
+            continue
+
+        # Score 1: Fuzzy token overlap
+        matches = sum(
+            1 for token in query_tokens
+            if any(token in tw or tw in token for tw in title_tokens)
+        )
+        ratio = matches / len(query_tokens) if query_tokens else 0
+        if ratio >= threshold:
+            scored.append((1, p))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in scored]
 
 
-def calculate_total_sales(orders: list[dict]) -> float:
-    """Sum total_price from a list of orders."""
-    total = 0.0
-    for o in orders:
+# ─────────────────────────────────────────────
+# Product Summarizer
+# ─────────────────────────────────────────────
+
+def summarize_product(product: dict) -> dict:
+    """
+    Convert a raw GraphQL product node into a compact, LLM-friendly summary.
+
+    Expects the GraphQL product node shape:
+        id, title, tags (list), description,
+        variants { edges { node { title, price, inventoryQuantity, sku } } }
+
+    Returns:
+        Dict: id, title, tags (str), price_range (PKR), in_stock, variants list, description.
+    """
+    variants_raw = [
+        edge["node"]
+        for edge in product.get("variants", {}).get("edges", [])
+    ]
+
+    prices = []
+    inventories = []
+    variant_summary = []
+
+    for v in variants_raw:
+        price_val = v.get("price", "0") or "0"
+        inv = v.get("inventoryQuantity", 0) or 0
         try:
-            total += float(o.get("total_price", 0) or 0)
-        except (TypeError, ValueError):
-            pass
-    return total
+            prices.append(float(price_val))
+        except ValueError:
+            prices.append(0.0)
+        inventories.append(inv)
+        variant_summary.append({
+            "title": v.get("title", "Default"),
+            "price": format_money(price_val),
+            "inventory": inv,
+            "sku": v.get("sku", ""),
+        })
+
+    price_range = ""
+    if prices:
+        mn, mx = min(prices), max(prices)
+        price_range = format_money(mn) if mn == mx else f"{format_money(mn)} – {format_money(mx)}"
+
+    in_stock = any(q > 0 for q in inventories)
+
+    # GraphQL returns tags as a list
+    tags = product.get("tags", [])
+    tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
+
+    return {
+        "id": product.get("id", ""),
+        "title": product.get("title", ""),
+        "tags": tags_str,
+        "price_range": price_range,
+        "in_stock": in_stock,
+        "variants": variant_summary,
+        "description": (product.get("description", "") or "")[:300],
+    }
 
 
-def calculate_average_order_value(orders: list[dict]) -> float:
-    if not orders:
-        return 0.0
-    return calculate_total_sales(orders) / len(orders)
+# ─────────────────────────────────────────────
+# Order Summarizer
+# ─────────────────────────────────────────────
 
-
-def extract_product_sales(orders: list[dict]) -> dict[str, dict]:
+def summarize_order(order: dict) -> dict:
     """
-    Aggregate quantity sold and revenue per product title from orders.
-    Returns {product_title: {quantity, revenue}}
+    Convert a raw GraphQL order node into a compact, LLM-friendly summary.
+
+    Expects GraphQL order node with fields from ORDER_FIELDS defined below.
+
+    Returns:
+        Dict with order metadata, line items, fulfillment tracking, and refunds.
     """
-    sales: dict[str, dict] = {}
-    for order in orders:
-        for item in order.get("line_items", []):
-            title = item.get("title", "Unknown")
-            qty = int(item.get("quantity", 0))
-            price = float(item.get("price", 0) or 0)
-            if title not in sales:
-                sales[title] = {"quantity": 0, "revenue": 0.0}
-            sales[title]["quantity"] += qty
-            sales[title]["revenue"] += qty * price
-    return sales
+    # Line items
+    line_items = [
+        {
+            "title": edge["node"].get("title"),
+            "quantity": edge["node"].get("quantity"),
+            "price": format_money(edge["node"].get("originalUnitPrice")),
+        }
+        for edge in order.get("lineItems", {}).get("edges", [])
+    ]
+
+    # Fulfillments
+    fulfillments = []
+    for f in order.get("fulfillments", []):
+        tracking_info = f.get("trackingInfo") or []
+        fulfillments.append({
+            "status": f.get("status"),
+            "tracking_number": tracking_info[0].get("number") if tracking_info else None,
+            "tracking_url": tracking_info[0].get("url") if tracking_info else None,
+        })
+
+    # Refunds
+    refunds = []
+    for r in order.get("refunds", []):
+        transactions = [
+            {
+                "amount": format_money(
+                    t["node"].get("amountSet", {}).get("shopMoney", {}).get("amount")
+                ),
+                "status": t["node"].get("status"),
+            }
+            for t in r.get("transactions", {}).get("edges", [])
+        ]
+        refunds.append({
+            "created_at": r.get("createdAt"),
+            "note": r.get("note"),
+            "transactions": transactions,
+        })
+
+    return {
+        "id": order.get("id", ""),
+        "name": order.get("name", ""),
+        "email": order.get("email", ""),
+        "created_at": order.get("createdAt", ""),
+        "financial_status": order.get("displayFinancialStatus", ""),
+        "fulfillment_status": order.get("displayFulfillmentStatus", ""),
+        "total_price": format_money(
+            order.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", "0")
+        ),
+        "line_items": line_items,
+        "shipping_address": order.get("shippingAddress"),
+        "fulfillments": fulfillments,
+        "refunds": refunds,
+        "note": order.get("note", ""),
+        "tags": order.get("tags", []),
+    }
 
 
-def pretty_json(data: Any) -> str:
-    """Pretty-print JSON for LLM tool results."""
-    return json.dumps(data, indent=2, default=str)
+# ─────────────────────────────────────────────
+# Reusable GraphQL Field Blocks
+# ─────────────────────────────────────────────
 
+# Product fields — used in product queries
+PRODUCT_FIELDS = """
+    id
+    title
+    tags
+    description
+    variants(first: 20) {
+        edges {
+            node {
+                title
+                price
+                sku
+                inventoryQuantity
+            }
+        }
+    }
+"""
 
-def safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def extract_order_id_from_text(text: str) -> Optional[int]:
-    """Pull a numeric order ID from user text like '#45821' or 'order 45821'."""
-    match = re.search(r"#?(\d{4,})", text)
-    return int(match.group(1)) if match else None
+# Order fields — used in order queries
+ORDER_FIELDS = """
+    id
+    name
+    email
+    createdAt
+    note
+    tags
+    displayFinancialStatus
+    displayFulfillmentStatus
+    totalPriceSet {
+        shopMoney { amount }
+    }
+    shippingAddress {
+        firstName
+        lastName
+        address1
+        city
+        country
+        phone
+    }
+    lineItems(first: 20) {
+        edges {
+            node {
+                title
+                quantity
+                originalUnitPrice
+            }
+        }
+    }
+    fulfillments {
+        status
+        trackingInfo {
+            number
+            url
+        }
+    }
+    refunds {
+        createdAt
+        note
+        transactions(first: 5) {
+            edges {
+                node {
+                    status
+                    amountSet {
+                        shopMoney { amount }
+                    }
+                }
+            }
+        }
+    }
+"""
