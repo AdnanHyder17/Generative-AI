@@ -1,175 +1,211 @@
 """
-main.py - Entry point for the Shopify AI Agent system.
+main.py — CLI entrypoint for the Silk Skin AI Agent System.
 
-Run modes:
-  python main.py                    → interactive chat (customer by default)
-  python main.py --role admin       → interactive chat as admin
-  python main.py --demo             → run all sample prompts and print results
-  python main.py --demo --role admin → run admin demo prompts
+Usage:
+    python main.py --role customer
+    python main.py --role admin
+    python main.py --role customer --thread my-session-123
+
+The role determines which agent handles the conversation:
+- customer: Routed to customer_support_agent (Aria)
+- admin: Routed to admin_support_agent (Atlas)
+
+Each --thread maintains separate conversation memory.
 """
 
 import argparse
-import sys
 import uuid
-from langchain_core.messages import HumanMessage
+import traceback
+import os
+from langchain_core.messages import HumanMessage, AIMessage
 
-from graph.agent_graph import Context, build_graph
-from utils import get_logger
+from graph import graph
 
-logger = get_logger("main")
-
-# ─── Sample Prompts ───────────────────────────────────────────────────────────
-
-CUSTOMER_DEMO_PROMPTS = [
-    "I'm looking for summer dresses under $50.",
-    "Do you have this product available in size medium?",
-    "Can you recommend best-selling products right now?",
-    "Where is my order #45821?",
-    "How long does shipping take to California?",
-    "What is your return and refund policy?",
-    "Do you offer any discounts or promo codes?",
-    "Is this product available in black color?",
-    "Can you suggest products similar to this one?",
-    "I received a damaged item. What should I do?",
-]
-
-ADMIN_DEMO_PROMPTS = [
-    "Show me today's total sales and number of orders.",
-    "What are my top 5 selling products this month?",
-    "How many orders are currently unfulfilled?",
-    "Which products are low in inventory?",
-    "Show me sales performance for the last 7 days.",
-    "Who are my top repeat customers?",
-    "What is the average order value this month?",
-    "List all refunded orders from this week.",
-    "Which products have not sold in the last 30 days?",
-    "Compare this month's sales with last month's sales.",
-]
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY_2")
+os.environ["LANGCHAIN_PROJECT"] = "shopify-agent"
 
 
-# ─── Chat Runner ──────────────────────────────────────────────────────────────
-
-def run_query(
-    graph,
-    user_input: str,
-    role: str,
-    thread_id: str,
-) -> str:
+def run_chat(user_role: str, thread_id: str):
     """
-    Send a single user message to the compiled graph and return the AI response.
+    Start an interactive chat session with the Silk Skin AI agent.
 
     Args:
-        graph: Compiled LangGraph
-        user_input: The user's message text
-        role: "customer" or "admin"
-        thread_id: Unique thread ID for memory persistence
-
-    Returns:
-        The assistant's response text
+        user_role: Either 'customer' or 'admin'.
+        thread_id: Unique session identifier for conversation memory.
     """
-    config = {
-        "configurable": {
-            "thread_id": thread_id,  # Required by InMemorySaver
-        }
-    }
+    role_label = "Customer" if user_role == "customer" else "Admin"
+    agent_name = "Customer_Agent" if user_role == "customer" else "Admin_Agent"
 
-    try:
-        result = graph.invoke(
-            {"messages": [HumanMessage(content=user_input)]},
-            config=config,
-            context=Context(user_role=role),
-        )
-        messages = result.get("messages", [])
-        # Get last AI message
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                return msg.content
-        return "No response generated."
-    except Exception as e:
-        logger.error("Graph invocation error: %s", e)
-        return f"System error: {e}"
+    print("\n" + "═" * 60)
+    print(f"  🛍️  Silk Skin AI Agent — {role_label} Mode")
+    print(f"  Agent: {agent_name}")
+    print(f"  Thread: {thread_id}")
+    print("  Type 'exit' or 'quit' to end the session.")
+    print("═" * 60 + "\n")
 
-
-def run_demo(graph, role: str) -> None:
-    """Run all demo prompts for a given role and print results."""
-    prompts = ADMIN_DEMO_PROMPTS if role == "admin" else CUSTOMER_DEMO_PROMPTS
-    thread_id = f"demo-{role}-{uuid.uuid4().hex[:8]}"
-
-    print(f"\n{'=' * 60}")
-    print(f"  DEMO MODE — Role: {role.upper()}")
-    print(f"{'=' * 60}\n")
-
-    for i, prompt in enumerate(prompts, 1):
-        print(f"[{i}/{len(prompts)}] USER: {prompt}")
-        print("-" * 50)
-        response = run_query(graph, prompt, role, thread_id)
-        print(f"ASSISTANT:\n{response}")
-        print("=" * 60 + "\n")
-
-
-def run_interactive(graph, role: str) -> None:
-    """Start an interactive chat session."""
-    thread_id = f"session-{role}-{uuid.uuid4().hex[:8]}"
-
-    print(f"\n{'=' * 60}")
-    print(f"  Shopify AI Agent — {'Customer' if role == 'customer' else 'Admin'} Mode")
-    print(f"  Thread ID: {thread_id}")
-    print(f"  Type 'exit' or 'quit' to end the session.")
-    print(f"{'=' * 60}\n")
+    config = {"configurable": {"thread_id": thread_id}}
 
     while True:
         try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nSession ended.")
+            user_input = input(f"{role_label}: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nSession ended.")
             break
 
         if not user_input:
             continue
-        if user_input.lower() in {"exit", "quit", "bye"}:
-            print("Goodbye!")
+
+        if user_input.lower() in ("exit", "quit"):
+            print(f"\n{agent_name}: Thank you for shopping with Silk Skin. Goodbye! 👋\n")
             break
 
-        response = run_query(graph, user_input, role, thread_id)
-        print(f"\nAssistant: {response}\n")
+        # Build state for this turn
+        state_input = {
+            "messages": [HumanMessage(content=user_input)],
+            "user_role": user_role,
+            "active_agent": "customer_support_agent",  # default, overridden by router
+        }
+
+        print(f"\n{agent_name}: ", end="", flush=True)
+
+        try:
+            result = graph.invoke(state_input, config=config)
+
+            messages = result.get("messages", [])
+            ai_response = None
+
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    content = msg.content
+
+                    if isinstance(content, list):
+                        content = " ".join(
+                            b.get("text", "")
+                            for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+
+                    ai_response = content
+                    break
+
+            if ai_response:
+                print(ai_response)
+            else:
+                print("(No response generated)")
+
+        except Exception as e:
+            print(f"⚠️  Error: {str(e)}")
+            print("Traceback: ", traceback.format_exc())
+
+        print()  # spacing
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+def batch_demo(user_role: str, thread_id: str, prompts: list[str]):
+    """
+    Run a batch of demo prompts non-interactively.
 
-def main():
+    Args:
+        user_role: 'customer' or 'admin'.
+        thread_id: Session identifier.
+        prompts: List of query strings to send.
+    """
+    agent_name = "Aria" if user_role == "customer" else "Atlas"
+    role_label = "Customer" if user_role == "customer" else "Admin"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    print("\n" + "═" * 60)
+    print(f"  🛍️  Silk Skin AI Agent — {role_label} DEMO Mode")
+    print("═" * 60)
+
+    for i, prompt in enumerate(prompts, 1):
+        print(f"\n[{i}] {role_label}: {prompt}")
+        print(f"     {agent_name}: ", end="", flush=True)
+
+        state_input = {
+            "messages": [HumanMessage(content=prompt)],
+            "user_role": user_role,
+            "active_agent": "customer_support_agent",
+        }
+
+        try:
+            result = graph.invoke(state_input, config=config)
+            messages = result.get("messages", [])
+            for msg in reversed(messages):
+                content = msg.content
+                if isinstance(content, list):
+                    content = " ".join([b["text"] for b in content if b.get("type") == "text"])
+                    print(content)
+                    break
+        except Exception as e:
+            print(f"⚠️  Error: {str(e)}")
+
+        print("-" * 60)
+
+
+# ─────────────────────────────────────────────
+# Demo Prompts
+# ─────────────────────────────────────────────
+
+CUSTOMER_DEMO_PROMPTS = [
+    "I need a premium leather wallet under $100 that's good for everyday use. What do you recommend?",
+    "I'm buying a birthday gift — can you suggest a luxury leather item that feels special and elegant?",
+    "I travel frequently for work. Which leather bags or travel accessories would be best for business trips?",
+    "Can you show me your best-selling wallets and bags right now?",
+    "Is this leather handbag available in black, and is it currently in stock?",
+    "I ordered a wallet (Order #45821). Can you check where it is and when it will arrive?",
+    "I received a damaged wallet today. How can I request a replacement or refund?",
+    "What is your return policy if I don't like the product after delivery?",
+    "I'm confused between getting a wallet or a card holder. Which one would be better for minimal everyday carry?",
+    "Do you have any products tagged as Ladies Wallet that are currently in stock?",
+    "Do you offer any discounts or promo codes?",
+    "Show me Card Holder products that are priced below $80.",
+    "Do you have any Handbags in brown color under $150?",
+    "Show me Travel bags available in black.",
+    "I'm looking for a Ladies Wallet in red color that's currently in stock.",
+]
+
+ADMIN_DEMO_PROMPTS = [
+    "Give me today's total revenue, total orders, and average order value.",
+    "What are my top 5 best-selling products this month ranked by revenue?",
+    "How many orders are currently unfulfilled, and what's their total value?",
+    "Which products are low in inventory and need restocking soon?",
+    "Compare this month's sales performance with last month, including revenue and order count.",
+    "Show me all products under the Travel tag and their current inventory levels.",
+    "List all refunded orders from this week with refund amounts.",
+    "Which products have not generated any sales in the last 30 days?",
+    "Show me orders placed in the last 24 hours with customer details and order value.",
+    "Generate a 7-day sales performance summary including total sales, orders, and top products.",
+]
+
+
+# ─────────────────────────────────────────────
+# CLI Entry Point
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Shopify AI Agent — LangGraph Multi-Agent System"
+        description="Silk Skin AI Agent — Customer & Admin Support System"
     )
     parser.add_argument(
         "--role",
         choices=["customer", "admin"],
         default="customer",
-        help="User role for this session (default: customer)",
+        help="User role: 'customer' or 'admin' (default: customer)",
     )
+
     parser.add_argument(
         "--demo",
         action="store_true",
-        help="Run demo prompts instead of interactive chat",
+        help="Run demo prompts in batch mode instead of interactive chat",
     )
+
     args = parser.parse_args()
-
-    logger.info("Initializing Shopify AI Agent (role=%s, demo=%s)...", args.role, args.demo)
-
-    try:
-        graph, _ = build_graph()
-    except EnvironmentError as e:
-        print(f"\n❌ Configuration Error: {e}")
-        print("Please ensure your .env file is set up correctly (see .env.example).")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Failed to initialize graph: {e}")
-        sys.exit(1)
+    thread_id = str(uuid.uuid4())
 
     if args.demo:
-        run_demo(graph, args.role)
+        prompts = CUSTOMER_DEMO_PROMPTS if args.role == "customer" else ADMIN_DEMO_PROMPTS
+        batch_demo(args.role, thread_id, prompts)
     else:
-        run_interactive(graph, args.role)
-
-
-if __name__ == "__main__":
-    main()
+        run_chat(args.role, thread_id)
