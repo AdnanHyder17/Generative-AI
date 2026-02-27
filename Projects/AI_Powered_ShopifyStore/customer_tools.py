@@ -32,8 +32,8 @@ def search_products(
     tags: list[str] = [],
     max_price: float = 0.0,
     color: str = "",
-    product_name: str = "", # not working
-    in_stock_only: bool = False, #not working
+    product_name: str = "",
+    in_stock_only: bool = False,
 ) -> list:
     """
     Search Silk Skin products by one or more tags, price, color, product name, and stock status.
@@ -58,8 +58,7 @@ def search_products(
 
     ── PRODUCT NAME SEARCH ──────────────────────────────────────────────────────────
     Pass approximate product name in 'product_name'. Fuzzy matching is applied —
-    exact title not required. E.g. "slim card wallet" matches "Men's Slim Leather Card Wallet".
-    Combine with tags for best results.
+    exact title not required. Use name without 'Product' keyword.
 
     ── PRICE ────────────────────────────────────────────────────────────────────────
     All prices are in Pakistani Rupees (PKR). max_price=0.0 means no price filter.
@@ -73,7 +72,7 @@ def search_products(
         tags: List of tags to filter by (OR logic). Empty = all products.
         max_price: Maximum price in PKR. 0.0 = no filter.
         color: Color keyword to search in variant titles and product description.
-        product_name: Approximate product name for fuzzy title matching.
+        product_name: Approximate name of product for fuzzy title matching.
         in_stock_only: If True, only return products with inventory > 0.
 
     Returns:
@@ -122,7 +121,10 @@ def search_products(
 
         # Filter by product name (fuzzy)
         if product_name:
+            print("1")
             summarized = filter_products_by_name(summarized, product_name)
+            if isinstance(summarized, str):
+                return summarized                
 
         # Filter by max price
         if max_price and max_price > 0:
@@ -152,13 +154,13 @@ def search_products(
         if in_stock_only:
             summarized = [
                 p for p in summarized
-                if any(v.get("inventory", 0) > 0 for v in p.get("variants", []))
+                if any(v.get("inventory_quantity", 0) > 0 for v in p.get("variants", []))
             ]
 
         return summarized
 
     except Exception as e:
-        return [{"error": f"Failed to search products: {str(e)}"}]
+        return f"Failed to search products: {str(e)}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -270,7 +272,7 @@ def get_order_status(order_number: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_store_policies() -> dict:
+def get_store_policies(which_policy: str) -> dict:
     """
     Return Silk Skin's return, refund, and discount policies.
 
@@ -279,9 +281,10 @@ def get_store_policies() -> dict:
     - Refund process ("How do I get a refund?", "I received a damaged item")
     - Discounts or promo codes ("Do you have discount codes?")
     - Exchange policy
-
-    Returns:
-        Dict with 'return_policy', 'refund_policy', 'damaged_item_process', 'discounts'.
+    
+    Args:
+        which_policy: Specify which policy info to return. Options:
+            'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'
     """
     return {
         "return_policy": (
