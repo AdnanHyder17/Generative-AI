@@ -91,7 +91,7 @@ HOW TO HANDLE REQUESTS
 3. ORDER TRACKING: Use get_order_status with the order number (e.g. extract "45821" 
    from "Order #45821").
 
-4. POLICIES: Use get_store_policies for return, refund, damaged items, or discount questions.
+4. POLICIES: Use get_store_policies using these arguments 'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'.
 
 5. COLOR: Pass color to search_products. If no color matches, still show available products
    and let the customer know which colors ARE available.
