@@ -15,6 +15,8 @@ Tools:
 """
 
 from datetime import datetime, timezone, timedelta
+from datetime import date
+from tracemalloc import start
 from langchain_core.tools import tool
 from utils import (
     gql,
@@ -24,15 +26,6 @@ from utils import (
     PRODUCT_FIELDS,
     ORDER_FIELDS,
 )
-
-
-def _iso_range(days_back: int = 0, hours_back: int = 0) -> tuple:
-    """Return (start_iso, end_iso) strings for a past time window."""
-    now = datetime.now(timezone.utc)
-    delta = timedelta(days=days_back, hours=hours_back)
-    start = now - delta
-    return start.isoformat(), now.isoformat()
-
 
 def _fetch_orders_gql(query_filter: str) -> list:
     """
@@ -87,32 +80,44 @@ def _fetch_products_gql(query_filter: str = "status:active") -> list:
 
 
 # ─────────────────────────────────────────────────────────────
+# Tool 0: Fetches todays date
+# ─────────────────────────────────────────────────────────────
+
+@tool(
+    description=("Retrieves the current date.")
+)
+def fetch_today_date() -> str:
+    return f"Today's date is {date.today().isoformat()}"
+
+
+# ─────────────────────────────────────────────────────────────
 # Tool 1: Revenue & Order Summary
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_revenue_summary(days: int = 1) -> dict:
+def get_revenue_summary(iso_start_date: date, iso_end_date: date) -> dict:
     """
     Get total revenue, total order count, and average order value for a time period.
-
-    Only counts orders with financial_status = paid.
+    If no date range is provided from user, default it to last 30 days.
 
     Use this for:
-    - "What is today's revenue?" → days=1
-    - "This week's sales summary" → days=7
-    - "Monthly revenue" → days=30
+    - "What is today's revenue?" 
+    - "This week's sales summary"
+    - "Monthly revenue"
 
     Args:
-        days: Number of past days to include (1 = today, 7 = week, 30 = month).
+        iso_start_date: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
 
     Returns:
         Dict: period_days, start_date, end_date, total_revenue (PKR),
               total_orders, average_order_value (PKR).
     """
     try:
-        start_date, end_date = _iso_range(days_back=days)
+        days = (iso_end_date - iso_start_date).days + 1
+
         orders = _fetch_orders_gql(
-            f'financial_status:paid AND created_at:>"{start_date}" AND created_at:<"{end_date}"'
+            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
 
         total_revenue = sum(
@@ -124,8 +129,8 @@ def get_revenue_summary(days: int = 1) -> dict:
 
         return {
             "period_days": days,
-            "start_date": start_date[:10],
-            "end_date": end_date[:10],
+            "start_date": iso_start_date.isoformat()[:10],
+            "end_date": iso_end_date.isoformat()[:10],
             "total_revenue": format_money(total_revenue),
             "total_orders": total_orders,
             "average_order_value": format_money(avg_order_value),
@@ -140,9 +145,10 @@ def get_revenue_summary(days: int = 1) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_top_products(days: int = 30, top_n: int = 5) -> list:
+def get_top_products(iso_start_date: date, iso_end_date: date, top_n: int = 5) -> list:
     """
     Get the top N best-selling products ranked by total revenue in a time period.
+    If no date range is provided from user, default it to last 30 days.
 
     Use this for:
     - "Top 5 products this month"
@@ -150,7 +156,8 @@ def get_top_products(days: int = 30, top_n: int = 5) -> list:
     - "Revenue by product"
 
     Args:
-        days: Number of past days to analyze (default 30).
+        iso_start_date: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
         top_n: How many top products to return (default 5).
 
     Returns:
@@ -158,9 +165,8 @@ def get_top_products(days: int = 30, top_n: int = 5) -> list:
         ranked by revenue descending.
     """
     try:
-        start_date, _ = _iso_range(days_back=days)
         orders = _fetch_orders_gql(
-            f'financial_status:paid AND created_at:>"{start_date}"'
+            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
 
         product_stats: dict = {}
@@ -277,9 +283,10 @@ def get_low_inventory_products(threshold: int = 3) -> list:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def compare_sales_periods(current_days: int = 30, previous_days: int = 30) -> dict:
+def compare_sales_periods(iso_start_date_period_1: date, iso_end_date_period_1: date, iso_start_date_period_2: date, iso_end_date_period_2: date) -> dict:
     """
     Compare revenue and order count between the current period and a previous period.
+    If no date range is provided from user, default it to comparing the last 30 days vs the 30 days before that.
 
     Use this for:
     - "Compare this month vs last month"
@@ -287,24 +294,20 @@ def compare_sales_periods(current_days: int = 30, previous_days: int = 30) -> di
     - "How did sales change?"
 
     Args:
-        current_days: Length of the current period in days (default 30).
-        previous_days: Length of the previous period in days (default 30).
+        iso_start_date_period_1: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date_period_1: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
+        iso_start_date_period_2: Start date of the previous period (inclusive) in ISO format (e.g., "2023-12-01").
+        iso_end_date_period_2: End date of the previous period (exclusive) in ISO format (e.g., "2024-12-31").
 
     Returns:
         Dict with current_period, previous_period stats, and delta changes
         including percentage change for revenue and order count.
     """
     try:
-        now = datetime.now(timezone.utc)
 
-        current_start = (now - timedelta(days=current_days)).isoformat()
-        current_end = now.isoformat()
-        previous_end = (now - timedelta(days=current_days)).isoformat()
-        previous_start = (now - timedelta(days=current_days + previous_days)).isoformat()
-
-        def fetch_period_stats(start: str, end: str) -> dict:
+        def fetch_period_stats(start: date, end: date) -> dict:
             orders = _fetch_orders_gql(
-                f'financial_status:paid AND created_at:>"{start}" AND created_at:<"{end}"'
+                f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{start}" AND created_at:<"{end}"'
             )
             revenue = sum(
                 float(o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", 0) or 0)
@@ -312,8 +315,8 @@ def compare_sales_periods(current_days: int = 30, previous_days: int = 30) -> di
             )
             return {"order_count": len(orders), "revenue": revenue}
 
-        current = fetch_period_stats(current_start, current_end)
-        previous = fetch_period_stats(previous_start, previous_end)
+        current = fetch_period_stats(iso_start_date_period_1, iso_end_date_period_1)
+        previous = fetch_period_stats(iso_start_date_period_2, iso_end_date_period_2)
 
         rev_change = current["revenue"] - previous["revenue"]
         order_change = current["order_count"] - previous["order_count"]
@@ -322,16 +325,14 @@ def compare_sales_periods(current_days: int = 30, previous_days: int = 30) -> di
 
         return {
             "current_period": {
-                "days": current_days,
-                "start": current_start[:10],
-                "end": current_end[:10],
+                "start": iso_start_date_period_1.isoformat()[:10],
+                "end": iso_end_date_period_1.isoformat()[:10],
                 "revenue": format_money(current["revenue"]),
                 "order_count": current["order_count"],
             },
             "previous_period": {
-                "days": previous_days,
-                "start": previous_start[:10],
-                "end": previous_end[:10],
+                "start": iso_start_date_period_2.isoformat()[:10],
+                "end": iso_end_date_period_2.isoformat()[:10],
                 "revenue": format_money(previous["revenue"]),
                 "order_count": previous["order_count"],
             },
@@ -352,9 +353,10 @@ def compare_sales_periods(current_days: int = 30, previous_days: int = 30) -> di
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_refunded_orders(days: int = 7) -> list:
+def get_refunded_orders(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Retrieve all fully or partially refunded orders from the past N days.
+    Retrieve all fully or partially refunded orders from the past.
+    If no date range is provided from user, default it to last 7 days.
 
     Use this for:
     - "Show me refunds from this week"
@@ -362,19 +364,19 @@ def get_refunded_orders(days: int = 7) -> list:
     - "How much have we refunded recently?"
 
     Args:
-        days: Number of past days to look back (default 7).
+        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
 
     Returns:
         List of summarized order dicts with refund transaction details.
     """
     try:
-        start_date, _ = _iso_range(days_back=days)
 
         refunded = _fetch_orders_gql(
-            f'financial_status:refunded AND created_at:>"{start_date}"'
+            f'financial_status:refunded AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
         partial = _fetch_orders_gql(
-            f'financial_status:partially_refunded AND created_at:>"{start_date}"'
+            f'financial_status:partially_refunded AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
 
         all_refunded = refunded + partial
@@ -389,9 +391,10 @@ def get_refunded_orders(days: int = 7) -> list:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_zero_sales_products(days: int = 30) -> list:
+def get_zero_sales_products(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Find active products that have generated zero paid sales in the past N days.
+    Find active products that have generated zero paid sales in the past.
+    If no date range is provided from user, default it to last 30 days.
 
     Use this for:
     - "Which products aren't selling?"
@@ -399,14 +402,14 @@ def get_zero_sales_products(days: int = 30) -> list:
     - "Show me non-performing / dead stock."
 
     Args:
-        days: Number of past days to analyze (default 30).
+        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
 
     Returns:
         List of product title strings with no sales in the period,
         or a confirmation message if all products have sold.
     """
     try:
-        start_date, _ = _iso_range(days_back=days)
 
         # Get all active product titles
         products = _fetch_products_gql("status:active")
@@ -414,7 +417,7 @@ def get_zero_sales_products(days: int = 30) -> list:
 
         # Get titles of products that appeared in paid orders
         orders = _fetch_orders_gql(
-            f'financial_status:paid AND created_at:>"{start_date}"'
+            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
         sold_titles = set()
         for order in orders:
@@ -433,24 +436,25 @@ def get_zero_sales_products(days: int = 30) -> list:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_recent_orders(hours: int = 24) -> list:
+def get_recent_orders(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Retrieve orders placed in the last N hours with customer details and order values.
+    Retrieve orders placed in the given date range with customer details and order values.
+    If no date range is provided from user, default it to last 3 days.
 
     Use this for:
-    - "Show me orders from the last 24 hours"
+    - "Show me orders from this week"
     - "What orders came in today?"
     - "Give me today's new orders"
 
     Args:
-        hours: How many hours back to look (default 24).
+        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
+        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
 
     Returns:
         List of summarized order dicts with customer info and order value.
     """
     try:
-        start_date, _ = _iso_range(hours_back=hours)
-        orders = _fetch_orders_gql(f'created_at:>"{start_date}"')
+        orders = _fetch_orders_gql(f'created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"')
         return [summarize_order(o) for o in orders]
 
     except Exception as e:
@@ -462,6 +466,7 @@ def get_recent_orders(hours: int = 24) -> list:
 # ─────────────────────────────────────────────────────────────
 
 ADMIN_TOOLS = [
+    fetch_today_date,
     get_revenue_summary,
     get_top_products,
     get_unfulfilled_orders,
