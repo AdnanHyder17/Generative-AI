@@ -12,11 +12,6 @@ The role determines which agent handles the conversation:
 Each --thread maintains separate conversation memory.
 """
 
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY_2")
-os.environ["LANGCHAIN_PROJECT"] = "shopify-agent"
-
 import argparse
 import uuid
 import traceback
@@ -25,6 +20,10 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from graph import graph
 
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY_2")
+os.environ["LANGCHAIN_PROJECT"] = "shopify-agent"
 
 def run_chat(user_role: str, thread_id: str):
     """
