@@ -6,8 +6,11 @@ GraphQL endpoint: https://{store}/admin/api/2026-01/graphql.json
 """
 
 import os
+import re
 import requests
 from dotenv import load_dotenv
+from typing import List
+from rapidfuzz import process, fuzz
 
 load_dotenv()
 
@@ -162,23 +165,16 @@ def filter_products_by_price(products: list, max_price: float) -> list:
             result.append(p)
     return result
 
-
-def filter_products_by_name(products: list, name_query: str, threshold: float = 0.35) -> list:
+def filter_products_by_name(products: list, name_query: str) -> list:
     """
     Filter products by fuzzy name match against the product title.
 
     Allows matching even when the user doesn't type the exact product name.
     Example: "leather slim wallet" will match "Men's Slim Leather Wallet".
 
-    Strategy (priority order):
-        Score 3 — Exact substring match in title.
-        Score 2 — All query words individually found in title.
-        Score 1 — Token overlap ratio >= threshold (fuzzy match).
-
     Args:
         products: List of product dicts.
         name_query: The user's approximate search string.
-        threshold: Minimum word overlap ratio (0.0-1.0). Default 0.35.
 
     Returns:
         Filtered list sorted by match confidence (best matches first).
@@ -186,40 +182,61 @@ def filter_products_by_name(products: list, name_query: str, threshold: float = 
     if not name_query:
         return products
 
-    query_lower = name_query.lower().strip()
-    stop_words = {"a", "an", "the", "for", "of", "and", "or", "is", "in", "on", "at", "to", "i", "me"}
-    query_tokens = [w for w in query_lower.split() if w not in stop_words and len(w) > 1]
+    query_strip = name_query.strip()
 
-    if not query_tokens:
+    if not query_strip:
         return products
-
-    scored = []
-    for p in products:
-        title = p.get("title", "").lower()
-        title_tokens = set(title.split())
-
-        # Score 3: Exact substring
-        if query_lower in title:
-            scored.append((3, p))
-            continue
-
-        # Score 2: All tokens present
-        if all(token in title for token in query_tokens):
-            scored.append((2, p))
-            continue
-
-        # Score 1: Fuzzy token overlap
-        matches = sum(
-            1 for token in query_tokens
-            if any(token in tw or tw in token for tw in title_tokens)
+    
+    titles = [p.get("title", "") for p in products if p.get("title")]
+    
+    exact_matches = is_same_string(query_strip, titles)
+    
+    if exact_matches:
+        return [p for p in products if p.get("title") == exact_matches[0]]
+    
+    matched = set()
+    fuzzy_matches = process.extract(
+            query_strip,
+            titles,
+            scorer=fuzz.WRatio,
+            processor=str.lower,
+            score_cutoff=65,
+            limit=2
         )
-        ratio = matches / len(query_tokens) if query_tokens else 0
-        if ratio >= threshold:
-            scored.append((1, p))
+    matched.update(m[0] for m in fuzzy_matches)
+    
+    if not matched:
+        return "No matching product found. Please refine."
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in scored]
+    if len(matched) > 1:
+        return f"product with closely similar names found {"[" + ", ".join(f'"{m}"' for m in matched) + "]"}. Which of these products is user looking for."
 
+    # Single fuzzy match
+    match = next(iter(matched))
+    return f"product with closely similar name found {'"' + match + '"'}. Re-infer this"
+
+
+def is_same_string(a: str, b: List) -> List[str]:
+    """
+    Compare all values in `a` with all values in `b` (after normalization).
+    Return a list of unique original `b` values that match.
+    """
+    # print("inside is_same_string: ", a, b)
+    def normalize(s: str) -> str:
+        # Remove all non-alphanumeric characters and lowercase
+        return re.sub(r"[^a-zA-Z0-9]", "", s).lower()
+
+    # Track unique matches from original b
+    matched_b = set()
+
+    # Compare all combinations
+    for b_item in b:
+        if normalize(a) == normalize(b_item):
+            # print(f"Exact match found: '{normalize(a)}' == '{normalize(b_item)}'")
+            matched_b.add(b_item)
+
+    # Return as list
+    return list(matched_b)
 
 # ─────────────────────────────────────────────
 # Product Summarizer
@@ -263,7 +280,7 @@ def summarize_product(product: dict) -> dict:
     price_range = ""
     if prices:
         mn, mx = min(prices), max(prices)
-        price_range = format_money(mn) if mn == mx else f"{format_money(mn)} – {format_money(mx)}"
+        price_range = format_money(mn) if mn == mx else f"{format_money(mn)} - {format_money(mx)}"
 
     in_stock = any(q > 0 for q in inventories)
 
@@ -347,7 +364,6 @@ def summarize_order(order: dict) -> dict:
         "shipping_address": order.get("shippingAddress"),
         "fulfillments": fulfillments,
         "refunds": refunds,
-        "note": order.get("note", ""),
         "tags": order.get("tags", []),
     }
 
