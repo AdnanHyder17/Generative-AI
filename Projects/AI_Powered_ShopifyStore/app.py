@@ -1,8 +1,14 @@
-import streamlit as st
-import uuid
+"""
+Frontend using streamlit to interact with the shopify agent.
+
+Usage:
+    streamlit run app.py
+"""
 import os
-from langchain_core.messages import HumanMessage, AIMessage
-from graph import graph  # Import your existing graph
+import uuid
+import streamlit as st
+from graph import graph
+from langchain.messages import HumanMessage, AIMessage
 
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
