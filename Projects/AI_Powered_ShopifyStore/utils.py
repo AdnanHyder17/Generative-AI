@@ -248,10 +248,10 @@ def summarize_product(product: dict) -> dict:
 
     Expects the GraphQL product node shape:
         id, title, tags (list), description,
-        variants { edges { node { title, price, inventoryQuantity, sku } } }
+        variants { edges { node { title, price, inventoryQuantity } } }
 
     Returns:
-        Dict: id, title, tags (str), price_range (PKR), in_stock, variants list, description.
+        Dict: title, tags (str), price_range (PKR), in_stock, variants list, description.
     """
     variants_raw = [
         edge["node"]
@@ -273,8 +273,7 @@ def summarize_product(product: dict) -> dict:
         variant_summary.append({
             "title": v.get("title", "Default"),
             "price": format_money(price_val),
-            "inventory": inv,
-            "sku": v.get("sku", ""),
+            "inventory": inv
         })
 
     price_range = ""
@@ -289,7 +288,6 @@ def summarize_product(product: dict) -> dict:
     tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
 
     return {
-        "id": product.get("id", ""),
         "title": product.get("title", ""),
         "tags": tags_str,
         "price_range": price_range,
