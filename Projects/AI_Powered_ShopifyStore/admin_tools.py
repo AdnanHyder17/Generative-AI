@@ -4,6 +4,7 @@ admin_tools.py — Tools available exclusively to the Admin Support Agent.
 All Shopify data is fetched via the Admin GraphQL API.
 
 Tools:
+0. fetch_today_date           — Get tidays date for dynamic queries.
 1. get_revenue_summary        — Revenue, order count, AOV for any time window.
 2. get_top_products           — Best-selling products ranked by revenue.
 3. get_unfulfilled_orders     — Unfulfilled order count, value, and list.
@@ -14,12 +15,9 @@ Tools:
 8. get_recent_orders          — Orders placed in the last N hours.
 """
 
-from datetime import datetime, timezone, timedelta
 from datetime import date
-from tracemalloc import start
-from langchain_core.tools import tool
+from langchain.tools import tool
 from utils import (
-    gql,
     gql_paginated,
     summarize_order,
     format_money,
@@ -459,6 +457,7 @@ def get_recent_orders(iso_start_date: date, iso_end_date: date) -> list:
 
     except Exception as e:
         return [{"error": f"Failed to get recent orders: {str(e)}"}]
+
 
 
 # ─────────────────────────────────────────────────────────────
