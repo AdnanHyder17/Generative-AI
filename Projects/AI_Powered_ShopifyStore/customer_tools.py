@@ -10,7 +10,7 @@ Tools:
 4. get_store_policies — Return, refund, and discount policy (static).
 """
 
-from langchain_core.tools import tool
+from langchain.tools import tool
 from utils import (
     gql,
     gql_paginated,
@@ -34,16 +34,16 @@ def search_products(
     color: str = "",
     product_name: str = "",
     in_stock_only: bool = False,
-) -> list:
+):
     """
     Search Silk Skin products by one or more tags, price, color, product name, and stock status.
 
-    ── WHEN TO USE ──────────────────────────────────────────────────────────────────
-    Use for any product browsing, filtering, or searching request from a customer.
+    WHEN TO USE:
+        Use for any product browsing, filtering, or searching request from a customer.
 
-    ── TAG SELECTION GUIDE ──────────────────────────────────────────────────────────
-    Pass ALL relevant tags in one call (OR logic — products matching ANY tag included).
-    Do NOT call this tool multiple times for multi-tag searches.
+    TAG SELECTION GUIDE:
+        Pass ALL relevant tags in one call (OR logic — products matching ANY tag included).
+        Always think about what the customer wants and include ALL relevant tags and pass in a List in one call.
 
     VALID TAGS (exact spelling required):
       "Wallet"              → Men's/general leather wallets
@@ -56,17 +56,15 @@ def search_products(
       "Accessories"         → Leather accessories
       "featured collection" → Best-sellers / featured items
 
-    ── PRODUCT NAME SEARCH ──────────────────────────────────────────────────────────
-    Pass approximate product name in 'product_name'. Fuzzy matching is applied —
-    exact title not required. Use name without 'Product' keyword.
+    PRODUCT NAME SEARCH:
+        Pass approximate product name in 'product_name'. Fuzzy matching is applied —
+        exact title not required. Use name without 'Product' keyword.
 
-    ── PRICE ────────────────────────────────────────────────────────────────────────
-    All prices are in Pakistani Rupees (PKR). max_price=0.0 means no price filter.
+    PRICE:
+        All prices are in Pakistani Rupees (PKR). max_price=0.0 means no price filter.
 
-    ── COLOR ────────────────────────────────────────────────────────────────────────
-    Pass a plain color word: "black", "brown", "red", "tan", etc.
-    If no color match found, falls back to showing all results so the agent can
-    inform the customer which colors ARE available.
+    COLOR:
+        Pass a plain color word: "black", "brown", "red", "tan", etc.
 
     Args:
         tags: List of tags to filter by (OR logic). Empty = all products.
@@ -76,7 +74,7 @@ def search_products(
         in_stock_only: If True, only return products with inventory > 0.
 
     Returns:
-        List of product summaries: {id, title, tags, price_range, in_stock, variants}.
+        List of product summaries: {title, tags, price_range, in_stock, variants}.
     """
     try:
         query = f"""
@@ -146,9 +144,19 @@ def search_products(
 
                 if variant_match or title_match or desc_match:
                     color_filtered.append(p)
+                    
+            if not color_filtered:
+                for p in summarized:
+                    # Check variant titles
+                    available_colors = [
+                        v.get("title", "").lower() for v in p.get("variants", [])
+                    ]
+                    
+                if len(available_colors)>0:
+                    return f"{color} color is unavailable for the following filter, but we do have these colors available: {', '.join(set(available_colors))}."
 
-            # If color yields results use them; else return all so agent can suggest available colors
-            summarized = color_filtered if color_filtered else summarized
+        # If color yields results use them; else return all so agent can suggest available colors
+        summarized = color_filtered if color_filtered else summarized
 
         # Filter by stock
         if in_stock_only:
@@ -170,13 +178,12 @@ def search_products(
 @tool
 def get_best_sellers(limit: int = 5) -> list:
     """
-    Retrieve products from the featured collection — Silk Skin's best-sellers.
+    Retrieve products from the featured collection — Silk Skin's best-sellers. 
 
     Use this when a customer asks:
     - "What are your best-sellers?"
     - "What's popular right now?"
     - "Show me your top products."
-    - "What do most people buy?"
 
     Args:
         limit: Number of products to return (default 5, max 10).
@@ -202,7 +209,7 @@ def get_best_sellers(limit: int = 5) -> list:
         return [summarize_product(p) for p in products[:limit]]
 
     except Exception as e:
-        return [{"error": f"Failed to get best sellers: {str(e)}"}]
+        return f"Failed to get best sellers: {str(e)}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -220,14 +227,11 @@ def get_order_status(order_number: str) -> dict:
     - "Track my order #45821"
     - "When will Order #45821 arrive?"
 
-    The order number may be formatted as '#45821' or just '45821'.
-
     Args:
         order_number: The order number string, e.g. '45821' or '#45821'.
 
     Returns:
-        Order summary dict with status, fulfillment, tracking, and line items.
-        Returns an error dict if the order is not found.
+        Order summary with status, fulfillment, tracking, and line items.
     """
     try:
         clean_number = order_number.lstrip("#").strip()
@@ -254,17 +258,12 @@ def get_order_status(order_number: str) -> dict:
             edges = data.get("orders", {}).get("edges", [])
 
         if not edges:
-            return {
-                "error": (
-                    f"No order found with number #{clean_number}. "
-                    "Please double-check the order number and try again."
-                )
-            }
+            return f"No order found with number #{clean_number}. Please double-check the order number and try again."
 
         return summarize_order(edges[0]["node"])
 
     except Exception as e:
-        return {"error": f"Failed to retrieve order status: {str(e)}"}
+        return f"Failed to retrieve order status: {str(e)}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -272,7 +271,7 @@ def get_order_status(order_number: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 @tool
-def get_store_policies(which_policy: str) -> dict:
+def get_store_policies(policy_type: str) -> dict:
     """
     Return Silk Skin's return, refund, and discount policies.
 
@@ -283,10 +282,9 @@ def get_store_policies(which_policy: str) -> dict:
     - Exchange policy
     
     Args:
-        which_policy: Specify which policy info to return. Options:
-            'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'
+        policy_type: Specify which policy info to return. Possible arguments are 'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'
     """
-    return {
+    policy = {
         "return_policy": (
             "Silk Skin offers a 14-day return window from the date of delivery. "
             "Items must be unused, in original condition, and returned in original packaging. "
@@ -310,6 +308,8 @@ def get_store_policies(which_policy: str) -> dict:
             "Subscribe to our newsletter or follow our social media for exclusive offers."
         ),
     }
+    
+    return policy.get(policy_type, "Invalid policy type requested. Please specify 'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -322,3 +322,50 @@ CUSTOMER_TOOLS = [
     get_order_status,
     get_store_policies,
 ]
+
+CUSTOMER_TOOLS_FOR_ADMIN = [
+    search_products,
+    get_order_status,
+    get_store_policies,
+]
+
+
+
+# @tool
+# def get_top_selling_products(iso_start_date: date, iso_end_date: date, top_n: int = 5) -> list:
+#     """
+#     Retrieve the top N best-selling products by revenue generated.
+
+#     Use this for:
+#     - "Show me the top 10 best-selling products"
+#     - "What are the most popular items in the store?"
+
+#     Args:
+#         iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
+#         iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
+#         top_n: Number of top products to return (default is 5).
+
+#     Returns:
+#         List of product title strings ranked by revenue.
+#     """
+#     try:
+#         products = _fetch_products_gql("status:active")
+
+#         product_revenue = []
+#         for p in products:
+#             title = p.get("title", "Unknown")
+#             revenue = sum(
+#                 float(edge["node"].get("originalUnitPrice", 0) or 0) * (edge["node"].get("quantity", 0) or 0)
+#                 for order in _fetch_orders_gql(f'lineItems.title:"{title}" AND financial_status:PAID AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"')
+#                 for edge in order.get("lineItems", {}).get("edges", [])
+#             )
+#             product_revenue.append({"product_title": title, "revenue": revenue})
+
+#         ranked = sorted(product_revenue, key=lambda x: x["revenue"], reverse=True)
+#         for item in ranked:
+#             item["revenue"] = format_money(item["revenue"])
+
+#         return ranked[:top_n]
+
+#     except Exception as e:
+#         return [{"error": f"Failed to get top selling products: {str(e)}"}]
