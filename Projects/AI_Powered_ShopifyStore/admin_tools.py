@@ -1,473 +1,349 @@
 """
-admin_tools.py — Tools available exclusively to the Admin Support Agent.
-
-All Shopify data is fetched via the Admin GraphQL API.
+admin_tools.py — Tools for the Admin Support Agent (Shopify Admin GraphQL API).
 
 Tools:
-0. fetch_today_date           — Get tidays date for dynamic queries.
-1. get_revenue_summary        — Revenue, order count, AOV for any time window.
-2. get_top_products           — Best-selling products ranked by revenue.
-3. get_unfulfilled_orders     — Unfulfilled order count, value, and list.
-4. get_low_inventory_products — Variants at or below a stock threshold.
-5. compare_sales_periods      — Revenue/order comparison between two periods.
-6. get_refunded_orders        — Refunded/partially refunded orders.
-7. get_zero_sales_products    — Products with no paid sales in a period.
-8. get_recent_orders          — Orders placed in the last N hours.
+    fetch_today_date           — Current date for dynamic queries.
+    get_revenue_summary        — Revenue, order count, AOV, and top products for a time window.
+    get_unfulfilled_orders     — Unfulfilled order count, value, and list.
+    get_low_inventory_products — Variants at or below a stock threshold.
+    compare_sales_periods      — Revenue/order comparison between two periods.
+    get_refunded_orders        — Refunded/partially refunded orders.
+    get_zero_sales_products    — Products with no paid sales in a period.
+    get_recent_orders          — Orders placed in a given date range.
 """
 
 from datetime import date
 from langchain.tools import tool
-from utils import (
-    gql_paginated,
-    summarize_order,
-    format_money,
-    PRODUCT_FIELDS,
-    ORDER_FIELDS,
-)
+from rapidfuzz import process, fuzz
+from utils import gql_paginated, summarize_order, is_same_string, format_money, PRODUCT_FIELDS, ORDER_FIELDS
+
+
+# ─────────────────────────────────────────────
+# Private Helpers
+# ─────────────────────────────────────────────
 
 def _fetch_orders_gql(query_filter: str) -> list:
-    """
-    Fetch all orders matching a Shopify GraphQL query filter string,
-    paginated automatically.
-
-    Args:
-        query_filter: Shopify search query string, e.g.
-                      'financial_status:paid AND created_at:>2026-01-01'
-
-    Returns:
-        List of raw GraphQL order nodes.
-    """
-    gql_query = f"""
+    """Fetch all orders matching a Shopify query filter string, paginated."""
+    query = f"""
     query ($cursor: String, $query: String) {{
         orders(first: 250, after: $cursor, query: $query) {{
             pageInfo {{ hasNextPage endCursor }}
-            edges {{
-                node {{
-                    {ORDER_FIELDS}
-                }}
-            }}
+            edges {{ node {{ {ORDER_FIELDS} }} }}
         }}
     }}
     """
-    return gql_paginated(gql_query, variables={"query": query_filter}, data_path=["orders"])
+    return gql_paginated(query, variables={"query": query_filter}, data_path=["orders"])
 
 
 def _fetch_products_gql(query_filter: str = "status:active") -> list:
-    """
-    Fetch all products matching a query filter, paginated automatically.
-
-    Args:
-        query_filter: Shopify product search query string.
-
-    Returns:
-        List of raw GraphQL product nodes.
-    """
-    gql_query = f"""
+    """Fetch all products matching a query filter, paginated."""
+    query = f"""
     query ($cursor: String, $query: String) {{
         products(first: 250, after: $cursor, query: $query) {{
             pageInfo {{ hasNextPage endCursor }}
-            edges {{
-                node {{
-                    {PRODUCT_FIELDS}
-                }}
-            }}
+            edges {{ node {{ {PRODUCT_FIELDS} }} }}
         }}
     }}
     """
-    return gql_paginated(gql_query, variables={"query": query_filter}, data_path=["products"])
+    return gql_paginated(query, variables={"query": query_filter}, data_path=["products"])
 
 
-# ─────────────────────────────────────────────────────────────
-# Tool 0: Fetches todays date
-# ─────────────────────────────────────────────────────────────
+def _order_revenue(order: dict) -> float:
+    return float(order.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", 0) or 0)
 
-@tool(
-    description=("Retrieves the current date.")
-)
+
+def _paid_orders_filter(start: date, end: date) -> str:
+    return f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{start}" AND created_at:<"{end}"'
+
+
+# ─────────────────────────────────────────────
+# Tools
+# ─────────────────────────────────────────────
+
+@tool(description="Returns today's date in ISO format (YYYY-MM-DD).")
 def fetch_today_date() -> str:
     return f"Today's date is {date.today().isoformat()}"
 
 
-# ─────────────────────────────────────────────────────────────
-# Tool 1: Revenue & Order Summary
-# ─────────────────────────────────────────────────────────────
-
 @tool
-def get_revenue_summary(iso_start_date: date, iso_end_date: date) -> dict:
+def get_revenue_summary(
+    iso_start_date: date,
+    iso_end_date: date,
+    top_n: int = 0,
+    tag: str = "",
+    product_name: str = "",
+) -> dict:
     """
-    Get total revenue, total order count, and average order value for a time period.
-    If no date range is provided from user, default it to last 30 days.
-
-    Use this for:
-    - "What is today's revenue?" 
-    - "This week's sales summary"
-    - "Monthly revenue"
+    Total revenue, order count, AOV, and top-selling products for a time period.
 
     Args:
-        iso_start_date: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
+        iso_start_date: Start date inclusive (YYYY-MM-DD).
+        iso_end_date:   End date inclusive (YYYY-MM-DD).
+        top_n:          Number of top products to return by units sold (0 = default 3).
+        tag:            Optional product tag to restrict revenue to (e.g. "Wallets").
+        product_name:   Optional approximate product name; fuzzy-matched against active titles.
 
     Returns:
-        Dict: period_days, start_date, end_date, total_revenue (PKR),
-              total_orders, average_order_value (PKR).
+        Dict: period_days, start_date, end_date, tag_filter, product_filter,
+              total_revenue (PKR), total_orders, average_order_value (PKR),
+              top_products [{product_title, total_units_sold}].
     """
     try:
-        days = (iso_end_date - iso_start_date).days + 1
+        n = top_n if top_n > 0 else 3
 
-        orders = _fetch_orders_gql(
-            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
-        )
+        allowed_titles: set | None = None
+        if tag or product_name:
+            query_parts = ["status:active"]
+            if tag:
+                query_parts.append(f'tag:"{tag}"')
+            filtered_products = _fetch_products_gql(" AND ".join(query_parts))
+            all_titles = [p.get("title", "") for p in filtered_products if p.get("title")]
 
-        total_revenue = sum(
-            float(o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", 0) or 0)
-            for o in orders
-        )
-        total_orders = len(orders)
-        avg_order_value = total_revenue / total_orders if total_orders > 0 else 0
+            if product_name:
+                exact = is_same_string(product_name, all_titles)
+                if exact:
+                    allowed_titles = set(exact)
+                else:
+                    fuzzy_matches = process.extract(
+                        product_name, all_titles,
+                        scorer=fuzz.WRatio, processor=str.lower,
+                        score_cutoff=65, limit=2,
+                    )
+                    matched = {m[0] for m in fuzzy_matches}
+                    if not matched:
+                        return {"error": "No matching product found. Please refine."}
+                    if len(matched) > 1:
+                        options = ", ".join(f'"{m}"' for m in matched)
+                        return {"error": f"Multiple similar products found: [{options}]. Which one did you mean?"}
+                    allowed_titles = matched
+            else:
+                allowed_titles = set(all_titles)
 
-        return {
-            "period_days": days,
-            "start_date": iso_start_date.isoformat()[:10],
-            "end_date": iso_end_date.isoformat()[:10],
-            "total_revenue": format_money(total_revenue),
-            "total_orders": total_orders,
-            "average_order_value": format_money(avg_order_value),
-        }
+        orders = _fetch_orders_gql(_paid_orders_filter(iso_start_date, iso_end_date))
 
-    except Exception as e:
-        return {"error": f"Failed to get revenue summary: {str(e)}"}
+        total_revenue = 0.0
+        total_orders = 0
+        stats: dict = {}
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 2: Top Selling Products
-# ─────────────────────────────────────────────────────────────
-
-@tool
-def get_top_products(iso_start_date: date, iso_end_date: date, top_n: int = 5) -> list:
-    """
-    Get the top N best-selling products ranked by total revenue in a time period.
-    If no date range is provided from user, default it to last 30 days.
-
-    Use this for:
-    - "Top 5 products this month"
-    - "Which products are selling the most?"
-    - "Revenue by product"
-
-    Args:
-        iso_start_date: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
-        top_n: How many top products to return (default 5).
-
-    Returns:
-        List of dicts: {product_title, total_revenue (PKR), total_units_sold},
-        ranked by revenue descending.
-    """
-    try:
-        orders = _fetch_orders_gql(
-            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
-        )
-
-        product_stats: dict = {}
         for order in orders:
+            order_contributes = False
+            order_revenue = _order_revenue(order)
+
             for edge in order.get("lineItems", {}).get("edges", []):
                 item = edge["node"]
                 title = item.get("title", "Unknown")
-                qty = item.get("quantity", 0) or 0
-                price = float(item.get("originalUnitPrice", 0) or 0)
-                revenue = qty * price
 
-                if title not in product_stats:
-                    product_stats[title] = {"total_revenue": 0.0, "total_units_sold": 0}
-                product_stats[title]["total_revenue"] += revenue
-                product_stats[title]["total_units_sold"] += qty
+                if allowed_titles is not None and title not in allowed_titles:
+                    continue
+
+                qty = item.get("quantity", 0) or 0
+                order_contributes = True
+                stats.setdefault(title, {"total_units_sold": 0})
+                stats[title]["total_units_sold"] += qty
+
+            if order_contributes:
+                total_revenue += order_revenue
+                total_orders += 1
 
         ranked = sorted(
-            [{"product_title": k, **v} for k, v in product_stats.items()],
-            key=lambda x: x["total_revenue"],
+            [{"product_title": k, **v} for k, v in stats.items()],
+            key=lambda x: x["total_units_sold"],
             reverse=True,
         )
 
-        # Format revenue after sorting
-        for item in ranked:
-            item["total_revenue"] = format_money(item["total_revenue"])
-
-        return ranked[:top_n]
-
+        return {
+            "period_days": (iso_end_date - iso_start_date).days + 1,
+            "start_date": iso_start_date.isoformat()[:10],
+            "end_date": iso_end_date.isoformat()[:10],
+            "tag_filter": tag or None,
+            "product_filter": next(iter(allowed_titles)) if allowed_titles and product_name else None,
+            "total_revenue": format_money(total_revenue),
+            "total_orders": total_orders,
+            "average_order_value": format_money(total_revenue / total_orders if total_orders else 0),
+            "top_products": ranked[:n],
+        }
     except Exception as e:
-        return [{"error": f"Failed to get top products: {str(e)}"}]
+        return {"error": f"Failed to get revenue summary: {e}"}
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 3: Unfulfilled Orders
-# ─────────────────────────────────────────────────────────────
 
 @tool
 def get_unfulfilled_orders() -> dict:
     """
-    Retrieve all currently unfulfilled orders with their count and total value.
-
-    Use this for:
-    - "How many orders are unfulfilled?"
-    - "What orders are pending shipment?"
-    - "Show me the backlog."
+    All currently unfulfilled open orders — count, total value, and order list.
 
     Returns:
-        Dict: count, total_value (PKR), orders (list of up to 20 summarized orders).
+        Dict: count, total_value (PKR), orders (up to 20 summarized orders).
     """
     try:
         orders = _fetch_orders_gql("fulfillment_status:unfulfilled AND status:open")
-
-        total_value = sum(
-            float(o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", 0) or 0)
-            for o in orders
-        )
-
         return {
             "count": len(orders),
-            "total_value": format_money(total_value),
-            "orders": [summarize_order(o) for o in orders[:20]],  # cap for LLM context
+            "total_value": format_money(sum(_order_revenue(o) for o in orders)),
+            "orders": [summarize_order(o) for o in orders[:20]],
         }
-
     except Exception as e:
-        return {"error": f"Failed to get unfulfilled orders: {str(e)}"}
+        return {"error": f"Failed to get unfulfilled orders: {e}"}
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 4: Low Inventory Products
-# ─────────────────────────────────────────────────────────────
 
 @tool
 def get_low_inventory_products(threshold: int = 3) -> list:
     """
-    Find all active product variants with inventory at or below a threshold.
-
-    Use this for:
-    - "Which products need restocking?"
-    - "What's low on inventory?"
-    - "Show me products running out of stock."
+    Active product variants with inventory at or below a threshold, sorted most critical first.
 
     Args:
-        threshold: Inventory level at or below which a variant is flagged (default 3).
+        threshold: Max inventory level to flag (default 3).
 
     Returns:
-        List of dicts: {product_title, variant_title, inventory_quantity, sku},
-        sorted by inventory_quantity ascending (most critical first).
+        List of {product_title, variant_title, inventory_quantity, sku}.
     """
     try:
         products = _fetch_products_gql("status:active")
-
         low_stock = []
         for p in products:
-            product_title = p.get("title", "")
             for edge in p.get("variants", {}).get("edges", []):
                 v = edge["node"]
                 qty = v.get("inventoryQuantity", 0) or 0
                 if qty <= threshold:
                     low_stock.append({
-                        "product_title": product_title,
+                        "product_title": p.get("title", ""),
                         "variant_title": v.get("title", "Default"),
                         "inventory_quantity": qty,
                         "sku": v.get("sku", "N/A"),
                     })
-
         return sorted(low_stock, key=lambda x: x["inventory_quantity"])
-
     except Exception as e:
-        return [{"error": f"Failed to get low inventory products: {str(e)}"}]
+        return [{"error": f"Failed to get low inventory products: {e}"}]
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 5: Sales Comparison (Period over Period)
-# ─────────────────────────────────────────────────────────────
 
 @tool
-def compare_sales_periods(iso_start_date_period_1: date, iso_end_date_period_1: date, iso_start_date_period_2: date, iso_end_date_period_2: date) -> dict:
+def compare_sales_periods(
+    iso_start_date_period_1: date,
+    iso_end_date_period_1: date,
+    iso_start_date_period_2: date,
+    iso_end_date_period_2: date,
+) -> dict:
     """
-    Compare revenue and order count between the current period and a previous period.
-    If no date range is provided from user, default it to comparing the last 30 days vs the 30 days before that.
-
-    Use this for:
-    - "Compare this month vs last month"
-    - "Month-over-month performance"
-    - "How did sales change?"
+    Side-by-side revenue and order count comparison between two date periods.
 
     Args:
-        iso_start_date_period_1: Start date of the current period (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date_period_1: End date of the current period (exclusive) in ISO format (e.g., "2024-01-31").
-        iso_start_date_period_2: Start date of the previous period (inclusive) in ISO format (e.g., "2023-12-01").
-        iso_end_date_period_2: End date of the previous period (exclusive) in ISO format (e.g., "2024-12-31").
+        iso_start_date_period_1 / iso_end_date_period_1: Current (more recent) period.
+        iso_start_date_period_2 / iso_end_date_period_2: Previous period to compare against.
 
     Returns:
-        Dict with current_period, previous_period stats, and delta changes
-        including percentage change for revenue and order count.
+        Dict: current_period stats, previous_period stats, and changes (absolute + %).
     """
     try:
+        def fetch_stats(start, end):
+            orders = _fetch_orders_gql(_paid_orders_filter(start, end))
+            return {"order_count": len(orders), "revenue": sum(_order_revenue(o) for o in orders)}
 
-        def fetch_period_stats(start: date, end: date) -> dict:
-            orders = _fetch_orders_gql(
-                f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{start}" AND created_at:<"{end}"'
-            )
-            revenue = sum(
-                float(o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", 0) or 0)
-                for o in orders
-            )
-            return {"order_count": len(orders), "revenue": revenue}
-
-        current = fetch_period_stats(iso_start_date_period_1, iso_end_date_period_1)
-        previous = fetch_period_stats(iso_start_date_period_2, iso_end_date_period_2)
-
-        rev_change = current["revenue"] - previous["revenue"]
-        order_change = current["order_count"] - previous["order_count"]
-        rev_pct = (rev_change / previous["revenue"] * 100) if previous["revenue"] > 0 else 0
-        order_pct = (order_change / previous["order_count"] * 100) if previous["order_count"] > 0 else 0
+        curr = fetch_stats(iso_start_date_period_1, iso_end_date_period_1)
+        prev = fetch_stats(iso_start_date_period_2, iso_end_date_period_2)
+        rev_change = curr["revenue"] - prev["revenue"]
+        ord_change = curr["order_count"] - prev["order_count"]
 
         return {
             "current_period": {
                 "start": iso_start_date_period_1.isoformat()[:10],
                 "end": iso_end_date_period_1.isoformat()[:10],
-                "revenue": format_money(current["revenue"]),
-                "order_count": current["order_count"],
+                "revenue": format_money(curr["revenue"]),
+                "order_count": curr["order_count"],
             },
             "previous_period": {
                 "start": iso_start_date_period_2.isoformat()[:10],
                 "end": iso_end_date_period_2.isoformat()[:10],
-                "revenue": format_money(previous["revenue"]),
-                "order_count": previous["order_count"],
+                "revenue": format_money(prev["revenue"]),
+                "order_count": prev["order_count"],
             },
             "changes": {
                 "revenue_change": format_money(rev_change),
-                "revenue_change_pct": f"{rev_pct:+.1f}%",
-                "order_change": order_change,
-                "order_change_pct": f"{order_pct:+.1f}%",
+                "revenue_change_pct": f"{(rev_change / prev['revenue'] * 100) if prev['revenue'] else 0:+.1f}%",
+                "order_change": ord_change,
+                "order_change_pct": f"{(ord_change / prev['order_count'] * 100) if prev['order_count'] else 0:+.1f}%",
             },
         }
-
     except Exception as e:
-        return {"error": f"Failed to compare sales periods: {str(e)}"}
+        return {"error": f"Failed to compare sales periods: {e}"}
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 6: Refunded Orders
-# ─────────────────────────────────────────────────────────────
 
 @tool
 def get_refunded_orders(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Retrieve all fully or partially refunded orders from the past.
-    If no date range is provided from user, default it to last 7 days.
-
-    Use this for:
-    - "Show me refunds from this week"
-    - "List all refunded orders"
-    - "How much have we refunded recently?"
+    Fully and partially refunded orders in a date range.
 
     Args:
-        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
+        iso_start_date: Start date inclusive (YYYY-MM-DD).
+        iso_end_date:   End date inclusive (YYYY-MM-DD).
 
     Returns:
         List of summarized order dicts with refund transaction details.
     """
     try:
-
         refunded = _fetch_orders_gql(
             f'financial_status:refunded AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
         partial = _fetch_orders_gql(
             f'financial_status:partially_refunded AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
         )
-
-        all_refunded = refunded + partial
-        return [summarize_order(o) for o in all_refunded]
-
+        return [summarize_order(o) for o in refunded + partial]
     except Exception as e:
-        return [{"error": f"Failed to get refunded orders: {str(e)}"}]
+        return [{"error": f"Failed to get refunded orders: {e}"}]
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 7: Products with Zero Sales
-# ─────────────────────────────────────────────────────────────
 
 @tool
 def get_zero_sales_products(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Find active products that have generated zero paid sales in the past.
-    If no date range is provided from user, default it to last 30 days.
-
-    Use this for:
-    - "Which products aren't selling?"
-    - "What products have had no sales this month?"
-    - "Show me non-performing / dead stock."
+    Active products with zero paid sales in a period — identifies potential dead stock.
 
     Args:
-        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
+        iso_start_date: Start date inclusive (YYYY-MM-DD).
+        iso_end_date:   End date inclusive (YYYY-MM-DD).
 
     Returns:
-        List of product title strings with no sales in the period,
-        or a confirmation message if all products have sold.
+        Sorted list of product title strings with no sales, or a confirmation message if all sold.
     """
     try:
-
-        # Get all active product titles
-        products = _fetch_products_gql("status:active")
-        all_titles = {p.get("title") for p in products}
-
-        # Get titles of products that appeared in paid orders
-        orders = _fetch_orders_gql(
-            f'(financial_status:PAID OR financial_status:PENDING) AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
-        )
-        sold_titles = set()
-        for order in orders:
-            for edge in order.get("lineItems", {}).get("edges", []):
-                sold_titles.add(edge["node"].get("title"))
-
-        zero_sales = sorted(all_titles - sold_titles)
-        return zero_sales if zero_sales else ["All products have had at least one sale in this period."]
-
+        all_titles = {p.get("title") for p in _fetch_products_gql("status:active")}
+        orders = _fetch_orders_gql(_paid_orders_filter(iso_start_date, iso_end_date))
+        sold = {
+            edge["node"].get("title")
+            for o in orders
+            for edge in o.get("lineItems", {}).get("edges", [])
+        }
+        zero = sorted(all_titles - sold)
+        return zero or ["All products have had at least one sale in this period."]
     except Exception as e:
-        return [f"Error: Failed to get zero-sales products: {str(e)}"]
+        return [f"Error: Failed to get zero-sales products: {e}"]
 
-
-# ─────────────────────────────────────────────────────────────
-# Tool 8: Recent Orders
-# ─────────────────────────────────────────────────────────────
 
 @tool
 def get_recent_orders(iso_start_date: date, iso_end_date: date) -> list:
     """
-    Retrieve orders placed in the given date range with customer details and order values.
-    If no date range is provided from user, default it to last 3 days.
-
-    Use this for:
-    - "Show me orders from this week"
-    - "What orders came in today?"
-    - "Give me today's new orders"
+    Orders placed in a given date range with customer details and order values.
 
     Args:
-        iso_start_date: Start date (inclusive) in ISO format (e.g., "2024-01-01").
-        iso_end_date: End date (exclusive) in ISO format (e.g., "2024-01-31").
+        iso_start_date: Start date inclusive (YYYY-MM-DD).
+        iso_end_date:   End date inclusive (YYYY-MM-DD).
 
     Returns:
-        List of summarized order dicts with customer info and order value.
+        List of summarized order dicts.
     """
     try:
-        orders = _fetch_orders_gql(f'created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"')
+        orders = _fetch_orders_gql(
+            f'created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
+        )
         return [summarize_order(o) for o in orders]
-
     except Exception as e:
-        return [{"error": f"Failed to get recent orders: {str(e)}"}]
+        return [{"error": f"Failed to get recent orders: {e}"}]
 
 
-
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # Exported tool list
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 ADMIN_TOOLS = [
     fetch_today_date,
     get_revenue_summary,
-    get_top_products,
     get_unfulfilled_orders,
     get_low_inventory_products,
     compare_sales_periods,
