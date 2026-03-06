@@ -1,55 +1,11 @@
 """
 graph.py — Main LangGraph StateGraph for Silk Skin AI Agent System.
 
-Architecture:
-─────────────────────────────────────────────────────────────────
-                        ┌──────────────────────────────┐
-                        │          START               │
-                        └──────────────┬───────────────┘
-                                       │
-                                       ▼
-                        ┌──────────────────────────────┐
-                        │          router              │
-                        │  (determines target agent    │
-                        │   based on user_role)        │
-                        └────────┬─────────────────────┘
-                                 │
-              ┌──────────────────┴────────────────────┐
-              │                                        │
-              ▼                                        ▼
- ┌────────────────────────┐          ┌─────────────────────────────┐
- │  customer_support_agent │          │   admin_support_agent        │
- │  (Aria)                 │          │   (Atlas)                    │
- │  - search_products      │          │   - get_revenue_summary      │
- │  - get_best_sellers     │          │   - get_top_products         │
- │  - get_order_status     │          │   - get_unfulfilled_orders   │
- │  - get_store_policies   │          │   - get_low_inventory        │
- └────────────┬────────────┘          │   - compare_sales_periods   │
-              │                       │   - get_refunded_orders      │
-              └──────────┬────────────│   - get_zero_sales_products  │
-                         │            │   - get_recent_orders        │
-                         │            │   + all customer tools       │
-                         │            └──────────┬──────────────────┘
-                         │                       │
-                         └──────────┬────────────┘
-                                    │
-                                    ▼
-                        ┌──────────────────────────────┐
-                        │          END                 │
-                        └──────────────────────────────┘
-
-Routing Rules:
-- user_role == "customer"  → ALWAYS goes to customer_support_agent
-- user_role == "admin"     → goes to admin_support_agent
-  (Admin can still trigger customer tools via admin_support_agent's tool set)
-─────────────────────────────────────────────────────────────────
-
 Memory: InMemorySaver (conversation memory across turns per thread_id)
 """
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.messages import HumanMessage
 
 from state import State, Context
 from agents import create_customer_agent, create_admin_agent
