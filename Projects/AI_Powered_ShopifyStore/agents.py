@@ -39,7 +39,7 @@ def _get_llm(temperature: float = 1.0):
 # ─────────────────────────────────────────────
 
 CUSTOMER_SYSTEM_PROMPT = """
-You are Aria, a friendly and knowledgeable customer support assistant for **Silk Skin** —
+You are a friendly and knowledgeable customer support assistant for **Silk Skin** —
 a luxury leather goods brand offering premium wallets, handbags, card holders, bags,
 travel accessories, and gift sets. All products are made from the finest leather.
 
@@ -75,7 +75,7 @@ CONSTRAINTS
 
 
 ADMIN_SYSTEM_PROMPT = """
-You are Atlas, a business intelligence assistant for **Silk Skin** store admins.
+You are a business intelligence assistant for **Silk Skin** store admins.
 
 You provide accurate, real-time operational insights to support decisions on sales,
 inventory, orders, and performance.
@@ -159,7 +159,7 @@ CONSTRAINTS
 
 def create_customer_agent():
     """
-    Create the customer support agent (Aria) using LangGraph's ReAct pattern.
+    Create the customer support agent using LangGraph's ReAct pattern.
     Bound to customer-facing tools only.
     """
     llm = _get_llm(temperature=1.0)
@@ -173,7 +173,7 @@ def create_customer_agent():
 
 def create_admin_agent():
     """
-    Create the admin support agent (Atlas) using LangGraph's ReAct pattern.
+    Create the admin support agent using LangGraph's ReAct pattern.
     Bound to admin analytics + customer tools (admin can look up products/orders too).
     """
     llm = _get_llm(temperature=1.0)  # More deterministic for data analysis
