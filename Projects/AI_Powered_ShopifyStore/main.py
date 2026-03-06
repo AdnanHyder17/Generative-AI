@@ -12,13 +12,12 @@ The role determines which agent handles the conversation:
 Each --thread maintains separate conversation memory.
 """
 
-import argparse
-import uuid
-import traceback
 import os
-from langchain_core.messages import HumanMessage, AIMessage
-
+import uuid
+import argparse
+import traceback
 from graph import graph
+from langchain_core.messages import HumanMessage, AIMessage
 
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
