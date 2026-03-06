@@ -5,11 +5,11 @@ Usage:
     uvicorn FastAPI:app --host 0.0.0.0 --port 8000
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+import json
+from graph import graph
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, AIMessage
-from graph import graph
-import json
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 
 app = FastAPI()
 
