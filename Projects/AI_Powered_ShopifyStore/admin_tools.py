@@ -15,13 +15,19 @@ Tools:
 from datetime import date
 from langchain.tools import tool
 from rapidfuzz import process, fuzz
-from utils import gql_paginated, summarize_order, is_same_string, format_money, PRODUCT_FIELDS, ORDER_FIELDS
-
+from utils import (
+    gql_paginated, 
+    summarize_order, 
+    is_same_string, 
+    format_money,
+    ORDER_FIELDS,
+    PRODUCT_FIELDS,
+)
 
 # ─────────────────────────────────────────────
-# Private Helpers
+# Private Helpers for Admin Tools
 # ─────────────────────────────────────────────
-
+    
 def _fetch_orders_gql(query_filter: str) -> list:
     """Fetch all orders matching a Shopify query filter string, paginated."""
     query = f"""
@@ -65,29 +71,24 @@ def fetch_today_date() -> str:
     return f"Today's date is {date.today().isoformat()}"
 
 
-@tool
+@tool(description="""Total revenue, order count, AOV, and top-selling products for a time period.
+
+Args:
+    iso_start_date: Start date inclusive (YYYY-MM-DD).
+    iso_end_date:   End date inclusive (YYYY-MM-DD).
+    top_n:          Number of top products to return by units sold (0 = default 3).
+    tag:            Optional product tag to restrict revenue to (e.g. "Wallets").
+    product_name:   Optional approximate product name; fuzzy-matched against active titles.
+
+Returns:
+    Dict: period_days, start_date, end_date, tag_filter, product_filter,
+            total_revenue (PKR), total_orders, average_order_value (PKR),
+            top_products [{product_title, total_units_sold}].
+""")
 def get_revenue_summary(
-    iso_start_date: date,
-    iso_end_date: date,
-    top_n: int = 0,
-    tag: str = "",
-    product_name: str = "",
+    iso_start_date: date, iso_end_date: date, top_n: int = 0, tag: str = "", product_name: str = ""
 ) -> dict:
-    """
-    Total revenue, order count, AOV, and top-selling products for a time period.
-
-    Args:
-        iso_start_date: Start date inclusive (YYYY-MM-DD).
-        iso_end_date:   End date inclusive (YYYY-MM-DD).
-        top_n:          Number of top products to return by units sold (0 = default 3).
-        tag:            Optional product tag to restrict revenue to (e.g. "Wallets").
-        product_name:   Optional approximate product name; fuzzy-matched against active titles.
-
-    Returns:
-        Dict: period_days, start_date, end_date, tag_filter, product_filter,
-              total_revenue (PKR), total_orders, average_order_value (PKR),
-              top_products [{product_title, total_units_sold}].
-    """
+    
     try:
         n = top_n if top_n > 0 else 3
 
@@ -166,14 +167,13 @@ def get_revenue_summary(
         return {"error": f"Failed to get revenue summary: {e}"}
 
 
-@tool
-def get_unfulfilled_orders() -> dict:
-    """
-    All currently unfulfilled open orders — count, total value, and order list.
+@tool(description="""All currently unfulfilled open orders — count, total value, and order list.
 
-    Returns:
-        Dict: count, total_value (PKR), orders (up to 20 summarized orders).
-    """
+Returns:
+    Dict: count, total_value (PKR), orders (up to 20 summarized orders).
+""")
+def get_unfulfilled_orders() -> dict:
+    
     try:
         orders = _fetch_orders_gql("fulfillment_status:unfulfilled AND status:open")
         return {
@@ -185,17 +185,16 @@ def get_unfulfilled_orders() -> dict:
         return {"error": f"Failed to get unfulfilled orders: {e}"}
 
 
-@tool
+@tool(description="""Active product variants with inventory at or below a threshold, sorted most critical first.
+
+Args:
+    threshold: Max inventory level to flag (default 3).
+
+Returns:
+    List of {product_title, variant_title, inventory_quantity, sku}.
+""")
 def get_low_inventory_products(threshold: int = 3) -> list:
-    """
-    Active product variants with inventory at or below a threshold, sorted most critical first.
-
-    Args:
-        threshold: Max inventory level to flag (default 3).
-
-    Returns:
-        List of {product_title, variant_title, inventory_quantity, sku}.
-    """
+    
     try:
         products = _fetch_products_gql("status:active")
         low_stock = []
@@ -215,23 +214,22 @@ def get_low_inventory_products(threshold: int = 3) -> list:
         return [{"error": f"Failed to get low inventory products: {e}"}]
 
 
-@tool
+@tool(description="""Side-by-side revenue and order count comparison between two date periods.
+
+Args:
+    iso_start_date_period_1 / iso_end_date_period_1: Current (more recent) period.
+    iso_start_date_period_2 / iso_end_date_period_2: Previous period to compare against.
+
+Returns:
+    Dict: current_period stats, previous_period stats, and changes (absolute + %).
+""")
 def compare_sales_periods(
     iso_start_date_period_1: date,
     iso_end_date_period_1: date,
     iso_start_date_period_2: date,
     iso_end_date_period_2: date,
 ) -> dict:
-    """
-    Side-by-side revenue and order count comparison between two date periods.
-
-    Args:
-        iso_start_date_period_1 / iso_end_date_period_1: Current (more recent) period.
-        iso_start_date_period_2 / iso_end_date_period_2: Previous period to compare against.
-
-    Returns:
-        Dict: current_period stats, previous_period stats, and changes (absolute + %).
-    """
+    
     try:
         def fetch_stats(start, end):
             orders = _fetch_orders_gql(_paid_orders_filter(start, end))
@@ -266,18 +264,17 @@ def compare_sales_periods(
         return {"error": f"Failed to compare sales periods: {e}"}
 
 
-@tool
+@tool(description="""Fully and partially refunded orders in a date range.
+
+Args:
+    iso_start_date: Start date inclusive (YYYY-MM-DD).
+    iso_end_date:   End date inclusive (YYYY-MM-DD).
+
+Returns:
+    List of summarized order dicts with refund transaction details.
+""")
 def get_refunded_orders(iso_start_date: date, iso_end_date: date) -> list:
-    """
-    Fully and partially refunded orders in a date range.
-
-    Args:
-        iso_start_date: Start date inclusive (YYYY-MM-DD).
-        iso_end_date:   End date inclusive (YYYY-MM-DD).
-
-    Returns:
-        List of summarized order dicts with refund transaction details.
-    """
+    
     try:
         refunded = _fetch_orders_gql(
             f'financial_status:refunded AND created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
@@ -290,18 +287,17 @@ def get_refunded_orders(iso_start_date: date, iso_end_date: date) -> list:
         return [{"error": f"Failed to get refunded orders: {e}"}]
 
 
-@tool
+@tool(description="""Active products with zero paid sales in a period — identifies potential dead stock.
+
+Args:
+    iso_start_date: Start date inclusive (YYYY-MM-DD).
+    iso_end_date:   End date inclusive (YYYY-MM-DD).
+
+Returns:
+    Sorted list of product title strings with no sales, or a confirmation message if all sold.
+""")
 def get_zero_sales_products(iso_start_date: date, iso_end_date: date) -> list:
-    """
-    Active products with zero paid sales in a period — identifies potential dead stock.
-
-    Args:
-        iso_start_date: Start date inclusive (YYYY-MM-DD).
-        iso_end_date:   End date inclusive (YYYY-MM-DD).
-
-    Returns:
-        Sorted list of product title strings with no sales, or a confirmation message if all sold.
-    """
+    
     try:
         all_titles = {p.get("title") for p in _fetch_products_gql("status:active")}
         orders = _fetch_orders_gql(_paid_orders_filter(iso_start_date, iso_end_date))
@@ -316,18 +312,17 @@ def get_zero_sales_products(iso_start_date: date, iso_end_date: date) -> list:
         return [f"Error: Failed to get zero-sales products: {e}"]
 
 
-@tool
+@tool(description="""Orders placed in a given date range with customer details and order values.
+
+Args:
+    iso_start_date: Start date inclusive (YYYY-MM-DD).
+    iso_end_date:   End date inclusive (YYYY-MM-DD).
+
+Returns:
+    List of summarized order dicts.
+""")
 def get_recent_orders(iso_start_date: date, iso_end_date: date) -> list:
-    """
-    Orders placed in a given date range with customer details and order values.
-
-    Args:
-        iso_start_date: Start date inclusive (YYYY-MM-DD).
-        iso_end_date:   End date inclusive (YYYY-MM-DD).
-
-    Returns:
-        List of summarized order dicts.
-    """
+    
     try:
         orders = _fetch_orders_gql(
             f'created_at:>"{iso_start_date}" AND created_at:<"{iso_end_date}"'
