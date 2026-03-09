@@ -27,7 +27,46 @@ from utils import (
 # Tool 1: Search / Browse Products
 # ─────────────────────────────────────────────────────────────
 
-@tool
+@tool(description="""Search Silk Skin products by one or more tags, price, color, product name, and stock status.
+
+WHEN TO USE:
+    Use for any product browsing, filtering, or searching request from a customer.
+
+TAG SELECTION GUIDE:
+    Pass ALL relevant tags in one call (OR logic — products matching ANY tag included).
+    Always think about what the customer wants and include ALL relevant tags in a single list.
+
+VALID TAGS (exact spelling required):
+    "Wallet"              → Men's/general leather wallets
+    "Ladies Wallet"       → Wallets for women
+    "Card Holder"         → Slim minimal card holders
+    "Handbags"            → Women's handbags
+    "Bags"                → General non-travel bags
+    "Travel"              → Travel bags, passport holders, travel accessories
+    "Gifts"               → Luxury gift sets
+    "Accessories"         → Leather accessories
+    "featured collection" → Best-sellers / featured items
+
+PRODUCT NAME SEARCH:
+    Pass approximate product name in 'product_name'. Fuzzy matching is applied —
+    exact title not required.
+
+PRICE:
+    All prices are in Pakistani Rupees (PKR). max_price=0.0 means no price filter.
+
+COLOR:
+    Pass a plain color word: "black", "brown", "red", "tan", etc.
+
+Args:
+    tags:         List of tags to filter by (OR logic). Empty = all products.
+    max_price:    Maximum price in PKR. 0.0 = no filter.
+    color:        Color keyword to match in variant titles, product title, or description.
+    product_name: Approximate product name for fuzzy title matching.
+    in_stock_only: If True, only return products with at least one variant in stock.
+
+Returns:
+    List of product summaries: {title, tags, price_range, in_stock, variants, description}.
+""")
 def search_products(
     tags: list[str] = [],
     max_price: float = 0.0,
@@ -35,47 +74,7 @@ def search_products(
     product_name: str = "",
     in_stock_only: bool = False,
 ):
-    """
-    Search Silk Skin products by one or more tags, price, color, product name, and stock status.
-
-    WHEN TO USE:
-        Use for any product browsing, filtering, or searching request from a customer.
-
-    TAG SELECTION GUIDE:
-        Pass ALL relevant tags in one call (OR logic — products matching ANY tag included).
-        Always think about what the customer wants and include ALL relevant tags in a single list.
-
-    VALID TAGS (exact spelling required):
-      "Wallet"              → Men's/general leather wallets
-      "Ladies Wallet"       → Wallets for women
-      "Card Holder"         → Slim minimal card holders
-      "Handbags"            → Women's handbags
-      "Bags"                → General non-travel bags
-      "Travel"              → Travel bags, passport holders, travel accessories
-      "Gifts"               → Luxury gift sets
-      "Accessories"         → Leather accessories
-      "featured collection" → Best-sellers / featured items
-
-    PRODUCT NAME SEARCH:
-        Pass approximate product name in 'product_name'. Fuzzy matching is applied —
-        exact title not required.
-
-    PRICE:
-        All prices are in Pakistani Rupees (PKR). max_price=0.0 means no price filter.
-
-    COLOR:
-        Pass a plain color word: "black", "brown", "red", "tan", etc.
-
-    Args:
-        tags:         List of tags to filter by (OR logic). Empty = all products.
-        max_price:    Maximum price in PKR. 0.0 = no filter.
-        color:        Color keyword to match in variant titles, product title, or description.
-        product_name: Approximate product name for fuzzy title matching.
-        in_stock_only: If True, only return products with at least one variant in stock.
-
-    Returns:
-        List of product summaries: {title, tags, price_range, in_stock, variants, description}.
-    """
+    
     try:
         query = f"""
         query ($cursor: String, $query: String) {{
@@ -173,22 +172,21 @@ def search_products(
 # Tool 2: Get Best-Selling Products
 # ─────────────────────────────────────────────────────────────
 
-@tool
+@tool(description="""Retrieve products from the featured collection — Silk Skin's best-sellers.
+
+Use this when a customer asks:
+- "What are your best-sellers?"
+- "What's popular right now?"
+- "Show me your top products."
+
+Args:
+    limit: Number of products to return (default 5, max 10).
+
+Returns:
+    List of product summaries from the featured collection.
+""")
 def get_best_sellers(limit: int = 5) -> list:
-    """
-    Retrieve products from the featured collection — Silk Skin's best-sellers.
-
-    Use this when a customer asks:
-    - "What are your best-sellers?"
-    - "What's popular right now?"
-    - "Show me your top products."
-
-    Args:
-        limit: Number of products to return (default 5, max 10).
-
-    Returns:
-        List of product summaries from the featured collection.
-    """
+    
     try:
         limit = min(limit, 10)
         query = f"""
@@ -214,23 +212,22 @@ def get_best_sellers(limit: int = 5) -> list:
 # Tool 3: Get Order Status
 # ─────────────────────────────────────────────────────────────
 
-@tool
+@tool(description="""Look up a customer's order status, fulfillment info, and tracking details.
+
+Use this when a customer provides an order number and asks:
+- "Where is my order?"
+- "Has my order shipped?"
+- "Track my order #45821"
+- "When will Order #45821 arrive?"
+
+Args:
+    order_number: The order number string, e.g. '45821' or '#45821'.
+
+Returns:
+    Order summary with status, fulfillment, tracking, and line items.
+""")
 def get_order_status(order_number: str) -> dict:
-    """
-    Look up a customer's order status, fulfillment info, and tracking details.
-
-    Use this when a customer provides an order number and asks:
-    - "Where is my order?"
-    - "Has my order shipped?"
-    - "Track my order #45821"
-    - "When will Order #45821 arrive?"
-
-    Args:
-        order_number: The order number string, e.g. '45821' or '#45821'.
-
-    Returns:
-        Order summary with status, fulfillment, tracking, and line items.
-    """
+    
     try:
         clean_number = order_number.lstrip("#").strip()
 
@@ -267,23 +264,22 @@ def get_order_status(order_number: str) -> dict:
 # Tool 4: Get Store Policies
 # ─────────────────────────────────────────────────────────────
 
-@tool
+@tool(description="""Return Silk Skin's store policies.
+
+Use this when a customer asks about:
+- Returns / exchanges ("Can I return this?", "What's your return policy?")
+- Refunds ("How do I get a refund?")
+- Damaged items ("I received a damaged item")
+- Discounts or promo codes
+
+Args:
+    policy_type: One of 'return_policy', 'refund_policy', 'damaged_item_process', 'discounts'.
+
+Returns:
+    Policy text as a string.
+""")
 def get_store_policies(policy_type: str) -> str:
-    """
-    Return Silk Skin's store policies.
-
-    Use this when a customer asks about:
-    - Returns / exchanges ("Can I return this?", "What's your return policy?")
-    - Refunds ("How do I get a refund?")
-    - Damaged items ("I received a damaged item")
-    - Discounts or promo codes
-
-    Args:
-        policy_type: One of 'return_policy', 'refund_policy', 'damaged_item_process', 'discounts'.
-
-    Returns:
-        Policy text as a string.
-    """
+    
     policies = {
         "return_policy": (
             "Silk Skin offers a 14-day return window from the date of delivery. "
