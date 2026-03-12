@@ -20,7 +20,7 @@ class State(MessagesState):
     - last_tool_output: Optional scratch space for tool results passed between nodes.
     """
     user_role: Literal["customer", "admin"]
-    active_agent: Literal["customer_support_agent", "admin_support_agent", "__end__"]
+    active_agent: Literal["customer_support_agent", "admin_support_agent"] = None
 
 
 class Context:
