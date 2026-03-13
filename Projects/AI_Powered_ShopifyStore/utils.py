@@ -8,8 +8,8 @@ GraphQL endpoint: https://{store}/admin/api/2026-01/graphql.json
 import os
 import re
 import requests
-from dotenv import load_dotenv
 from typing import List
+from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
 
 load_dotenv()
