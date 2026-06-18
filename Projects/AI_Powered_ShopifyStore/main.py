@@ -1,6 +1,6 @@
 """
 main.py — CLI entrypoint for the Silk Skin AI Agent System.
-
+ 
 Usage:
     python main.py --role customer
     python main.py --role admin
