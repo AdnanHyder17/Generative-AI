@@ -307,8 +307,7 @@ def get_store_policies(policy_type: str) -> str:
 
     return policies.get(
         policy_type,
-        "Invalid policy type. Please specify one of: 'return_policy', 'refund_policy', "
-        "'damaged_item_process', or 'discounts'.",
+        "Invalid policy type. Please specify one of: 'return_policy', 'refund_policy', 'damaged_item_process', or 'discounts'.",
     )
 
 
